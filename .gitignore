@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.pytest_cache/
+.venv/
+venv/
+
+# Data and outputs (large / regenerable)
+data/*
+!data/README.md
+results/*
+!results/README.md
+
+# Model weights downloaded by Ultralytics
+*.pt

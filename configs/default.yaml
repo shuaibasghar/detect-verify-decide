@@ -1,0 +1,72 @@
+# Detect–Verify–Decide — default experiment configuration.
+# Every notebook loads this file through `dvd.config.load_config()`.
+# `${ROOT}` is replaced by the project root (the folder containing this `configs/` dir).
+# Values tuned on the held-out split (crop margin, thresholds) are written to
+# results/tuning/selected.json and override the defaults below.
+
+seed: 42
+
+paths:
+  data_root: auto                      # auto -> /content/data on Colab (fast local disk), ${ROOT}/data elsewhere
+  download_cache: ${ROOT}/data/downloads   # persistent copy of the dataset zips (lives on Drive on Colab)
+  results_root: ${ROOT}/results        # all caches, tables and figures (persistent)
+
+coco:
+  split: val2017
+  heldout_size: 500                    # tuning split: crop margin + decision thresholds
+  test_size: 1000                      # evaluation split; null = all remaining 4500 images
+  iou_threshold: 0.5                   # TP if IoU >= this with an unmatched GT box of the same class
+
+detector:
+  backend: grounding_dino              # grounding_dino | yolo_world
+  grounding_dino_model: IDEA-Research/grounding-dino-tiny
+  yolo_world_model: yolov8s-worldv2.pt
+  box_threshold: 0.20                  # candidate threshold; must be <= the smallest tau_low in the sweep
+  text_threshold: 0.20
+  classes_per_prompt: 20               # Grounding DINO text limit -> 80 COCO classes split into 4 prompts
+  nms_iou: 0.7                         # class-wise NMS after merging prompts
+  max_detections: 100
+
+verifier:
+  model: Qwen/Qwen2-VL-2B-Instruct     # frozen VLM, <= ~2B params so it fits a T4 next to the detector
+  mode: existence                      # existence (POPE-style yes/no) | open (fully label-blind naming)
+  view: crop                           # crop (proposed) | full (global-evidence ablation)
+  crop_margin: 0.15                    # box expansion on each side, fraction of box w/h (tuned in NB03)
+  crop_target_size: 448                # longer crop side after upscaling ("zoom")
+  min_crop_side: 28                    # Qwen2-VL patch-merge size
+  full_image_max_side: 896             # full-image views (POPE, global ablation, baselines)
+  batch_size: 8
+  prompt_existence: "Is there {article} {label} in the image? Answer yes or no."
+  prompt_open: "What is the main object in this image? Answer with one or two words."
+  open_max_new_tokens: 10
+
+decision:
+  tau_low_grid:  [0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50]
+  tau_high_grid: [0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.70, 0.80, 0.90, 1.01]   # 1.01 = never auto-accept
+  detector_only_grid: [0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.70, 0.80]
+  selection: best_f1                   # best_f1 | matched_recall
+  llm_aggregator_images: 100           # optional LLM aggregator is evaluated on this many held-out images
+
+margin_tuning:
+  margins: [0.0, 0.10, 0.15, 0.25, 0.40]
+  images: 200                          # held-out images used for the margin search
+
+woodpecker:
+  max_candidates: 30                   # top-K candidates listed in the single-agent prompt (rest rejected)
+
+vcd:
+  alpha: 1.0                           # contrast strength
+  beta: 0.1                            # adaptive plausibility cut-off
+  noise_step: 500                      # diffusion noise step (of 1000), as in the official VCD code
+
+pope:
+  hf_dataset: lmms-lab/POPE
+  settings: [random, popular, adversarial]
+  max_per_setting: null                # null = all 3000 questions per setting; e.g. 500 for a quick run
+
+robustness:
+  images: 200
+  conditions: [low_light, motion_blur, low_res, jpeg]
+
+cost:
+  online_latency_images: 100           # images used to measure real end-to-end latency in NB09
