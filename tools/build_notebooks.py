@@ -5,6 +5,7 @@ import textwrap
 from pathlib import Path
 
 OUT = Path(sys.argv[1])
+ONLY = set(sys.argv[2:])  # optional: regenerate only these notebooks, e.g. 12_streamlit_demo
 OUT.mkdir(parents=True, exist_ok=True)
 
 
@@ -940,7 +941,77 @@ for p in files:
 '''),
 ]
 
+# ------------------------------------------------------------------------------------------------ 12
+NB["12_streamlit_demo"] = [
+    header("12 · Streamlit demo UI (live agent view)",
+           "Launch the Streamlit app (`app/streamlit_app.py`) from Colab and open it through a temporary public URL. "
+           "The app shows which agent is running, the current step, a progress percentage and a live feedback log, "
+           "then the final detections with the reason for every accept / reject.",
+           "uploaded image or the COCO sample; optional tuned thresholds from `results/tuning/selected.json`",
+           "interactive UI only (nothing is written to `results/`)", "≈3 min to start (models load once)",
+           "Demo of Objective 1 (the three-agent pipeline)"),
+    BOOT, INSTALL,
+    md("""
+> **Heads-up.** Colab cannot expose a port directly, so this notebook starts a **Cloudflare quick tunnel**.
+> It downloads the `cloudflared` binary from Cloudflare's GitHub releases and prints a temporary
+> `https://<random>.trycloudflare.com` URL. **Anyone who has that URL can use the app on your GPU session**
+> until you run the last cell (or the runtime stops). Do not share the URL.
+"""),
+    code(r'''
+# 1. cloudflared (tunnel client)
+if not os.path.exists("/usr/local/bin/cloudflared"):
+    subprocess.run(["wget", "-q", "-O", "/usr/local/bin/cloudflared",
+                    "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"], check=True)
+    subprocess.run(["chmod", "+x", "/usr/local/bin/cloudflared"], check=True)
+print("cloudflared ready")
+'''),
+    code(r'''
+# 2. start the Streamlit app in the background (log: /content/streamlit.log)
+import time, re
+os.environ["DVD_ROOT"] = PROJECT_ROOT
+app_proc = subprocess.Popen(
+    ["streamlit", "run", f"{PROJECT_ROOT}/app/streamlit_app.py", "--server.port", "8501", "--server.headless", "true",
+     "--browser.gatherUsageStats", "false"],
+    stdout=open("/content/streamlit.log", "w"), stderr=subprocess.STDOUT)
+time.sleep(8)
+print("streamlit running:", app_proc.poll() is None)
+if app_proc.poll() is not None:
+    print(open("/content/streamlit.log").read()[-2000:])
+'''),
+    code(r'''
+# 3. open the tunnel and print the URL
+tunnel_log = open("/content/cloudflared.log", "w")
+tunnel_proc = subprocess.Popen(["cloudflared", "tunnel", "--url", "http://localhost:8501"], stdout=tunnel_log, stderr=subprocess.STDOUT)
+url = None
+for _ in range(60):
+    time.sleep(1)
+    m = re.search(r"https://[-a-z0-9]+\.trycloudflare\.com", open("/content/cloudflared.log").read())
+    if m:
+        url = m.group(0); break
+print("Open this URL in a new tab:" if url else "No URL yet - see /content/cloudflared.log", url or "")
+'''),
+    md("""
+## Using the app
+1. Wait for **Loading models** to finish (first start downloads the weights).
+2. Upload an image, or press **Use a COCO sample image**.
+3. Adjust the uncertain band (τ_low, τ_high) and the crop margin if you like, then press **Run pipeline**.
+4. Watch the five agent cards, the progress percentage and the log update live; then open the tabs
+   (**Result**, **Verifier crops**, **All candidates**, **Run log**).
+
+If the page shows errors, check `/content/streamlit.log`.
+"""),
+    code(r'''
+# 4. stop everything (also closes the public URL)
+for p in (globals().get("tunnel_proc"), globals().get("app_proc")):
+    if p is not None and p.poll() is None:
+        p.terminate()
+print("stopped")
+'''),
+]
+
 for name, cells in NB.items():
+    if ONLY and name not in ONLY:
+        continue
     gpu = name not in ("08_main_comparison_coco",)
     (OUT / f"{name}.ipynb").write_text(json.dumps(notebook(cells, gpu), indent=1, ensure_ascii=False), encoding="utf-8")
     print("wrote", name)

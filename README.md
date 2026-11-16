@@ -24,7 +24,8 @@ flowchart LR
 
 1. Upload this folder to Google Drive as **`MyDrive/detect-verify-decide/`**, or push it to GitHub and set `REPO_URL` in the first cell of each notebook.
 2. Open `notebooks/00_setup_and_smoke_test.ipynb` in Colab and set *Runtime → T4 GPU*.
-3. Run the notebooks in order: **00 → 01 → 02 → 03 → 05 → 06 → 07 → 08 → 09 → 10**. Notebook 04 (POPE) can run in parallel, and 11 is optional.
+3. Run the notebooks in order: **00 → 01 → 02 → 03 → 05 → 06 → 07 → 08 → 09 → 10**. Notebook 04 (POPE) can run in parallel, and 11 and 12 are optional.
+4. **Live demo UI (optional):** run `notebooks/12_streamlit_demo.ipynb` to open the Streamlit app, which shows which agent is running, the progress percentage and a feedback log. See [docs/UI_GUIDE.md](docs/UI_GUIDE.md).
 
 Each notebook installs the requirements, mounts Drive and **resumes automatically** after a disconnect. Details: [docs/COLAB_GUIDE.md](docs/COLAB_GUIDE.md).
 
@@ -50,7 +51,10 @@ detect-verify-decide/
 │   ├── metrics.py                ← matching, P/R/F1, breakdown, sweeps, bootstrap, POPE
 │   ├── experiments.py            ← methods over identical candidates, selection, cost
 │   ├── cost.py  analysis.py  degrade.py  viz.py
+│   ├── coco_classes.py  mock_agents.py   ← 80 COCO names; fake agents for UI preview
 │   └── data/                     ← coco.py, pope.py, download.py
+├── app/
+│   └── streamlit_app.py          ← live demo UI (agent steps, progress %, feedback log)
 ├── notebooks/                    ← run on Colab, in order
 │   ├── 00_setup_and_smoke_test.ipynb
 │   ├── 01_data_preparation.ipynb
@@ -63,7 +67,8 @@ detect-verify-decide/
 │   ├── 08_main_comparison_coco.ipynb
 │   ├── 09_cost_analysis.ipynb
 │   ├── 10_error_analysis.ipynb
-│   └── 11_optional_robustness_monitoring.ipynb
+│   ├── 11_optional_robustness_monitoring.ipynb
+│   └── 12_streamlit_demo.ipynb
 ├── docs/                         ← all documentation (see index below)
 ├── tests/test_core.py            ← CPU-only unit tests (no GPU needed)
 ├── tools/build_notebooks.py      ← regenerates notebooks/ (overwrites manual edits)
@@ -82,6 +87,7 @@ detect-verify-decide/
 | [docs/SOURCE_CODE.md](docs/SOURCE_CODE.md) | Module-by-module API reference, record formats, how to extend |
 | [docs/EVALUATION_PROTOCOL.md](docs/EVALUATION_PROTOCOL.md) | Splits, matching, metric definitions, operating points, breakdown, cost model, fairness rules |
 | [docs/DATASETS_AND_BASELINES.md](docs/DATASETS_AND_BASELINES.md) | Datasets, models, baseline implementations and stated deviations, ablations |
+| [docs/UI_GUIDE.md](docs/UI_GUIDE.md) | Streamlit demo: what it shows, progress events, how to launch on Colab or locally (mock mode), limits |
 | [docs/EXPERIMENT_LOG.md](docs/EXPERIMENT_LOG.md) | Empty results template to fill from `results/` |
 
 ## Mapping to the proposal
@@ -94,12 +100,16 @@ detect-verify-decide/
 | 4. Added latency and invocations; accuracy-vs-cost | 09 |
 | Error analysis (contribution 4) | 10 |
 | Optional monitoring extension | 11 |
+| Live demo UI (not a result) | 12, `app/streamlit_app.py` |
 
 ## Local development (no GPU)
 
 ```bash
 pip install numpy pillow pyyaml tqdm
-python tests/test_core.py        # metrics, decision rule, cropping, parsers
+python tests/test_core.py        # metrics, decision rule, cropping, parsers, pipeline events
+
+pip install streamlit pandas
+streamlit run app/streamlit_app.py   # without torch it runs in MOCK mode (fake agents) to preview the UI
 ```
 
 ## Status

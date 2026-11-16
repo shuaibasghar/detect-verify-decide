@@ -103,6 +103,12 @@ Notebooks that use COCO add a fourth cell that loads the COCO data and the froze
   - qualitative run on your own frames in `data/custom_images/`.
 - **Writes:** `results/robustness/degradations.csv`.
 
+### 12_streamlit_demo.ipynb
+- **Goal:** launch the Streamlit demo UI from Colab (see [UI_GUIDE.md](UI_GUIDE.md)).
+- **Does:** starts `app/streamlit_app.py` in the background and opens a temporary Cloudflare tunnel URL. The last cell stops both.
+- **Writes:** nothing in `results/` (logs go to `/content/streamlit.log` and `/content/cloudflared.log`).
+- **Note:** the tunnel URL is public until you stop the notebook's last cell.
+
 ---
 
 ## Flags you may want to change inside notebooks

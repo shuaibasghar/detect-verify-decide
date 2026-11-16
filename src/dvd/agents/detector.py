@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import difflib
 import inspect
+import time
 
 import numpy as np
 from PIL import Image
@@ -69,12 +70,14 @@ class GroundingDINODetector:
         labels = res.get("text_labels", res.get("labels"))
         return res["boxes"].float().cpu().numpy(), res["scores"].float().cpu().numpy(), list(labels)
 
-    def detect(self, image: Image.Image) -> dict:
+    def detect(self, image: Image.Image, on_progress=None) -> dict:
+        """`on_progress(step, n_steps, n_candidates_so_far)` is called after each text prompt."""
         image = image.convert("RGB")
         w, h = image.size
         all_b, all_s, all_c = [], [], []
+        cb_time = 0.0
         with Timer() as t, self.torch.inference_mode():
-            for names, prompt in zip(self.chunks, self.prompts):
+            for step, (names, prompt) in enumerate(zip(self.chunks, self.prompts), 1):
                 inputs = self.processor(images=image, text=prompt, return_tensors="pt").to(self.device)
                 outputs = self.model(**inputs)
                 boxes, scores, phrases = self._post(outputs, inputs["input_ids"], (h, w))
@@ -85,7 +88,11 @@ class GroundingDINODetector:
                     all_b.append(b)
                     all_s.append(s)
                     all_c.append(self.class_names.index(names[k]))
-        return self._finalize(all_b, all_s, all_c, t.elapsed, len(self.prompts), w, h)
+                if on_progress:  # UI callback time is excluded from det_time_s
+                    t_cb = time.perf_counter()
+                    on_progress(step, len(self.chunks), len(all_s))
+                    cb_time += time.perf_counter() - t_cb
+        return self._finalize(all_b, all_s, all_c, t.elapsed - cb_time, len(self.prompts), w, h)
 
     def _finalize(self, boxes, scores, cls, elapsed, n_calls, w, h) -> dict:
         boxes = np.asarray(boxes, np.float32).reshape(-1, 4)
@@ -116,13 +123,15 @@ class YOLOWorldDetector(GroundingDINODetector):
         self.name_to_cat_id = {k.lower(): v for k, v in name_to_cat_id.items()}
         self.box_threshold, self.nms_iou, self.max_detections = box_threshold, nms_iou, max_detections
 
-    def detect(self, image: Image.Image) -> dict:
+    def detect(self, image: Image.Image, on_progress=None) -> dict:
         image = image.convert("RGB")
         w, h = image.size
         with Timer() as t:
             r = self.model.predict(image, conf=self.box_threshold, iou=self.nms_iou, max_det=self.max_detections,
                                    device=self.device, verbose=False)[0]
         b = r.boxes
+        if on_progress:
+            on_progress(1, 1, len(b))
         return self._finalize(b.xyxy.cpu().numpy(), b.conf.cpu().numpy(), b.cls.cpu().numpy().astype(int),
                               t.elapsed, 1, w, h)
 

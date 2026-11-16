@@ -97,6 +97,27 @@ def test_metrics_misc():
     assert m["accuracy"] == 0.5 and m["yes_rate"] == 0.5
 
 
+def test_pipeline_events():
+    from dvd.mock_agents import MockDetector, MockVerifier
+    from dvd.pipeline import DetectVerifyDecide
+
+    cfg = {"verifier": {"crop_margin": 0.15, "crop_target_size": 448, "min_crop_side": 28, "mode": "existence",
+                        "prompt_existence": "Is there {article} {label} in the image?", "prompt_open": "",
+                        "open_max_new_tokens": 5}}
+    pipe = DetectVerifyDecide(MockDetector(), MockVerifier(), __import__("dvd.agents.decision", fromlist=["x"])
+                              .RuleDecisionAgent(0.3, 0.7), cfg)
+    img, events = Image.new("RGB", (320, 240)), []
+    res = pipe(img, on_event=events.append)
+    prog = [e["progress"] for e in events]
+    assert prog == sorted(prog) and prog[-1] == 1.0 and events[-1]["stage"] == "done"
+    assert {e["stage"] for e in events} >= {"detector", "gate", "decision", "done"}
+    c = np.array(res["scores"])
+    band = (c >= 0.3) & (c < 0.7)
+    assert res["verified"] == band.tolist() and res["verify_invocations"] == int(band.sum())
+    assert (np.array(res["accept"]) == rule_accept(c, res["verdict"], 0.3, 0.7)).all()
+    assert pipe(img)["accept"] == res["accept"]  # works without a callback, same answer
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

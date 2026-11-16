@@ -10,3 +10,4 @@ Read in this order:
 6. [EVALUATION_PROTOCOL.md](EVALUATION_PROTOCOL.md) — exact metric definitions and selection rules.
 7. [DATASETS_AND_BASELINES.md](DATASETS_AND_BASELINES.md) — datasets, models, baselines and stated deviations.
 8. [EXPERIMENT_LOG.md](EXPERIMENT_LOG.md) — results template, filled in as experiments finish.
+9. [UI_GUIDE.md](UI_GUIDE.md) — the Streamlit demo UI (live agent view, progress, feedback log).

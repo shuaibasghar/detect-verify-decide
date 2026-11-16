@@ -128,3 +128,12 @@ The speed figures are planning estimates, not results. Measured values are produ
 | Rule-based decision | Cheap, transparent, and sweepable into a PR frontier. The LLM aggregator is an optional alternative. |
 | Confidence gating (τ_high) | Confident detections skip the verifier. This bounds cost and protects recall. |
 | Resumable JSONL caches | Colab sessions disconnect, and threshold sweeps become free |
+
+## 9. Live progress events (UI hook)
+
+`DetectVerifyDecide.__call__(image, on_event=None)` emits `{"stage", "msg", "progress"}` dictionaries while it runs:
+`detector` (one per text prompt) → `gate` → `crop` (one per uncertain candidate) → `verifier` (one per batch, with answers) → `decision` → `done`.
+
+- With `on_event=None` the behaviour and the returned record are identical to the cached offline stages.
+- Time spent in the callback is excluded from `det_time_s` and `verify_time_s`, so UI refreshes never inflate the latency numbers.
+- The Streamlit app (`app/streamlit_app.py`, see [UI_GUIDE.md](UI_GUIDE.md)) only consumes these events; it contains no pipeline logic.

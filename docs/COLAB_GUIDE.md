@@ -42,6 +42,7 @@ These are planning estimates. Real timings depend on the GPU you are given.
 | 09 cost | yes (online part) | 10 min | — |
 | 10 error analysis | no | 5 min | — (offline) |
 | 11 robustness (optional) | yes | 1–2 h | yes |
+| 12 Streamlit demo (optional) | yes | ≈3 min to start | — |
 
 Free-tier sessions last up to ~12 h but disconnect when idle. Long notebooks (03, 06, 11) may need 2–3 sessions. Just re-run them from the top and they continue where they stopped.
 

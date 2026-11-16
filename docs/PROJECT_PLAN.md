@@ -164,6 +164,10 @@ NB04 (POPE) needs only the verifier, so it can run in parallel with NB02–NB03 
 - ☐ 4.3.2 Compare detector-only and the pipeline using the thresholds tuned on clean held-out data, to measure transfer.
 - ☐ 4.3.3 Qualitative run on your own CCTV or traffic frames (`data/custom_images/`).
 
+### Step 4.4 Demo UI (optional) → `NB12`, `app/streamlit_app.py`, [UI_GUIDE.md](UI_GUIDE.md)
+- ☐ 4.4.1 Run NB12 on Colab and confirm the five agent cards, the progress percentage and the log update live with the real models.
+- ☐ 4.4.2 Screenshot a run for the report or the presentation. The UI is a demo, not a source of reported numbers.
+
 ---
 
 ## Phase P5 — Evaluation & analysis (week 13)
