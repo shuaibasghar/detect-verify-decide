@@ -48,24 +48,28 @@ if IN_COLAB:
     PROJECT_ROOT = DRIVE_PROJECT
 elif IN_KAGGLE:
     PROJECT_ROOT = "/kaggle/working/detect-verify-decide"
+    url = REPO_URL
+    if REPO_URL:
+        try:   # private repo: add a Kaggle secret named GITHUB_TOKEN (Add-ons -> Secrets)
+            from kaggle_secrets import UserSecretsClient
+            url = REPO_URL.replace("https://", f"https://{UserSecretsClient().get_secret('GITHUB_TOKEN')}@")
+        except Exception:
+            pass
     if not os.path.isdir(os.path.join(PROJECT_ROOT, "src", "dvd")):
         import glob
         attached = glob.glob("/kaggle/input/*/src/dvd") + glob.glob("/kaggle/input/*/*/src/dvd")   # project attached as a Kaggle Dataset
         if attached:
             shutil.copytree(os.path.dirname(os.path.dirname(attached[0])), PROJECT_ROOT)
         elif REPO_URL:
-            url = REPO_URL
-            try:   # private repo: add a Kaggle secret named GITHUB_TOKEN (Add-ons -> Secrets)
-                from kaggle_secrets import UserSecretsClient
-                url = REPO_URL.replace("https://", f"https://{UserSecretsClient().get_secret('GITHUB_TOKEN')}@")
-            except Exception:
-                pass
             r = subprocess.run(["git", "clone", "-q", "-b", BRANCH, url, PROJECT_ROOT], capture_output=True)
             if r.returncode:   # (the message deliberately does not echo the command, which could contain the token)
                 raise RuntimeError("git clone failed: is Internet ON, REPO_URL / BRANCH right, and for a private repo the GITHUB_TOKEN secret set?")
             subprocess.run(["git", "-C", PROJECT_ROOT, "remote", "set-url", "origin", REPO_URL])   # never keep the token in .git/config
         else:
             raise RuntimeError("Set REPO_URL (and BRANCH) above, or attach the project as a Kaggle Dataset.")
+    elif REPO_URL and os.path.isdir(os.path.join(PROJECT_ROOT, ".git")):   # folder left over from an earlier run: update it to the latest code
+        subprocess.run(["git", "-C", PROJECT_ROOT, "fetch", "-q", url, BRANCH], capture_output=True)
+        subprocess.run(["git", "-C", PROJECT_ROOT, "checkout", "-q", "FETCH_HEAD", "--", "src", "configs", "requirements.txt", "tools", "app"], capture_output=True)
 else:
     PROJECT_ROOT = os.path.abspath(os.path.join(os.getcwd(), ".."))
 assert os.path.isdir(os.path.join(PROJECT_ROOT, "src", "dvd")), f"src/dvd not found under {PROJECT_ROOT}"

@@ -2,8 +2,12 @@
 # Postpone evaluation of type hints (compatibility with older Python versions).
 from __future__ import annotations
 
+# os: walk the attached Kaggle inputs.
+import os
 # random: seeded shuffle that creates the held-out / test split.
 import random
+# shutil: copy the few needed files out of a read-only Kaggle input.
+import shutil
 # pathlib.Path: portable file paths.
 from pathlib import Path
 
@@ -12,6 +16,8 @@ import numpy as np
 # Pillow: opening the image files.
 from PIL import Image
 
+# in_kaggle: on Kaggle we first look for COCO attached as a dataset (no download, no rate limit).
+from ..config import in_kaggle
 # JSON helpers (splits.json is saved and loaded with them).
 from ..io_utils import load_json, save_json
 # Download helpers (progress bar, retries, zip extraction).
@@ -25,11 +31,40 @@ COCO_IMG_URL = "http://images.cocodataset.org/{split}/{name}"
 COCO_ANN_URL = "http://images.cocodataset.org/annotations/annotations_trainval2017.zip"
 
 
+# Where Kaggle mounts attached datasets / earlier notebook outputs.
+KAGGLE_INPUT = "/kaggle/input"
+# Big image folders are never descended into while searching (listing 118k files is slow and pointless).
+_SKIP_DIRS = {"train2017", "test2017", "val2017", "train2014", "val2014", "train", "test", "val"}
+
+
+def find_in_kaggle_inputs(name: str, want_dir: bool = False, root: str | None = None, max_depth: int = 5) -> Path | None:
+    """Search the attached Kaggle inputs (a few levels deep) for a file or folder called `name`; None if absent."""
+    root = root or KAGGLE_INPUT
+    if not os.path.isdir(root):
+        return None
+    for dirpath, dirnames, filenames in os.walk(root):
+        depth = dirpath[len(root):].count(os.sep)
+        # Found: a folder (e.g. val2017) among the sub-folders, or a file (e.g. instances_val2017.json).
+        if (want_dir and name in dirnames) or (not want_dir and name in filenames):
+            return Path(dirpath) / name
+        # Do not descend into the huge image folders, and stop at `max_depth`.
+        dirnames[:] = [] if depth >= max_depth else [d for d in dirnames if d not in _SKIP_DIRS]
+    return None
+
+
 def prepare_annotations(cfg: dict) -> Path:
     """Annotations only: downloads the 241 MB annotation zip once (cached) and extracts just
     instances_<split>.json (not the 450 MB train annotations). Returns the COCO root directory."""
     split = cfg["coco"]["split"]
     root = Path(cfg["paths"]["data_root"]) / "coco"
+    ann = root / "annotations" / f"instances_{split}.json"
+    # Kaggle: COCO attached via "Add Input" (e.g. a COCO 2017 dataset) is used first - no internet, no rate limit.
+    if not ann.exists() and in_kaggle():
+        local = find_in_kaggle_inputs(ann.name)
+        if local is not None:
+            ann.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(local, ann)
+            print(f"[coco] annotations taken from the attached input: {local}")
     # The marker file (the extracted json) makes repeated calls free; `members` extracts only that one file.
     download_and_extract(COCO_ANN_URL, cfg["paths"]["download_cache"], root,
                          root / "annotations" / f"instances_{split}.json",
@@ -56,6 +91,16 @@ def fetch_images(cfg: dict, image_ids, workers: int = 16) -> None:
     img_dir.mkdir(parents=True, exist_ok=True)
     # Only the files that are not on disk yet.
     need = [image_file_name(i) for i in image_ids if not (img_dir / image_file_name(i)).exists()]
+    # Kaggle: copy what we can from an attached COCO dataset; only the rest is downloaded.
+    if need and in_kaggle():
+        local = find_in_kaggle_inputs(split, want_dir=True)
+        if local is not None:
+            copied = [n for n in need if (local / n).exists()]
+            for n in copied:
+                shutil.copy(local / n, img_dir / n)
+            print(f"[coco] {len(copied)} of {len(need)} images copied from the attached input: {local}")
+            need = [n for n in need if n not in copied]
+        workers = min(workers, 6)       # fewer parallel requests: the COCO server rate-limits shared cloud IPs
     if not need:
         return
     # A zip cached on Drive from an earlier run is much faster than downloading again.

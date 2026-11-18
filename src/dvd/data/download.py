@@ -4,6 +4,8 @@ from __future__ import annotations
 
 # shutil: `move` renames the finished temp file into place.
 import shutil
+# time: `sleep` between retries.
+import time
 # urllib.request: standard-library HTTP client (no extra dependency).
 import urllib.request
 # zipfile: read the dataset zips and extract single members.
@@ -15,8 +17,10 @@ from pathlib import Path
 from tqdm.auto import tqdm
 
 
-def download(url: str, dest: str | Path, quiet: bool = False, retries: int = 3) -> Path:
-    """Download `url` to `dest` (skipped if it exists). `quiet` hides the progress bar (many small files)."""
+def download(url: str, dest: str | Path, quiet: bool = False, retries: int = 6) -> Path:
+    """Download `url` to `dest` (skipped if it exists). `quiet` hides the progress bar (many small files).
+    Failures (e.g. HTTP 503 "Slow Down", the COCO server's rate limit on shared cloud IPs) are retried with a growing
+    pause (5, 10, 20, 40, 60 s), alternating between the http:// and https:// form of the URL."""
     dest = Path(dest)
     # Already downloaded (non-empty file): nothing to do.
     if dest.exists() and dest.stat().st_size > 0:
@@ -24,9 +28,11 @@ def download(url: str, dest: str | Path, quiet: bool = False, retries: int = 3) 
     dest.parent.mkdir(parents=True, exist_ok=True)
     # Download into a temporary ".part" file so a half-finished download is never mistaken for a complete one.
     tmp = dest.with_suffix(dest.suffix + ".part")
+    # Same file over https as a second route (some networks / rate limits treat the two differently).
+    urls = [url] + ([url.replace("http://", "https://", 1)] if url.startswith("http://") else [])
     for attempt in range(retries):
         try:
-            with urllib.request.urlopen(url, timeout=60) as r, open(tmp, "wb") as f:
+            with urllib.request.urlopen(urls[attempt % len(urls)], timeout=60) as r, open(tmp, "wb") as f:
                 # Total size from the HTTP header (None if the server does not send it).
                 total = int(r.headers.get("Content-Length", 0)) or None
                 with tqdm(total=total, unit="B", unit_scale=True, desc=dest.name, disable=quiet) as bar:
@@ -39,9 +45,10 @@ def download(url: str, dest: str | Path, quiet: bool = False, retries: int = 3) 
                         bar.update(len(chunk))
             break
         except OSError:  # URLError / timeouts are OSError subclasses
-            # Re-raise only after the last attempt; earlier failures are retried.
+            # Re-raise only after the last attempt; earlier failures are retried after a growing pause.
             if attempt == retries - 1:
                 raise
+            time.sleep(min(60, 5 * 2 ** attempt))
     # Atomically put the finished file at its final name.
     shutil.move(tmp, dest)
     return dest

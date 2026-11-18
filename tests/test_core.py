@@ -293,6 +293,71 @@ def test_kaggle_paths():
     assert cfg["paths"]["results_root"] == tmp + "/r"
 
 
+def test_download_retries_after_503():
+    """HTTP 503 'Slow Down' (COCO's rate limit) is retried with a pause, and https is tried as the second route."""
+    import io
+    import tempfile
+    import urllib.error
+    import urllib.request
+    from pathlib import Path
+
+    import dvd.data.download as DL
+
+    calls = []
+
+    class Resp(io.BytesIO):
+        headers = {"Content-Length": "3"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(url, timeout=0):
+        calls.append(url)
+        if len(calls) < 3:
+            raise urllib.error.HTTPError(url, 503, "Slow Down", {}, None)
+        return Resp(b"abc")
+
+    old = (urllib.request.urlopen, DL.time.sleep)
+    urllib.request.urlopen, DL.time.sleep = fake_urlopen, (lambda s: None)    # no real network, no real waiting
+    try:
+        dest = DL.download("http://example.org/y.bin", Path(tempfile.mkdtemp()) / "y.bin", quiet=True)
+    finally:
+        urllib.request.urlopen, DL.time.sleep = old
+    assert dest.read_bytes() == b"abc" and len(calls) == 3 and calls[1].startswith("https://")
+
+
+def test_coco_from_attached_kaggle_input():
+    """On Kaggle, annotations and the needed images are taken from an attached COCO dataset instead of the network."""
+    import tempfile
+    from pathlib import Path
+
+    import dvd.data.coco as DC
+
+    tmp = Path(tempfile.mkdtemp())
+    src = tmp / "input" / "coco-2017-dataset" / "coco2017"
+    (src / "annotations").mkdir(parents=True)
+    (src / "val2017").mkdir()
+    (src / "annotations" / "instances_val2017.json").write_text("{}")
+    (src / "val2017" / "000000000139.jpg").write_bytes(b"img")
+    assert DC.find_in_kaggle_inputs("instances_val2017.json", root=str(tmp / "input")) == src / "annotations" / "instances_val2017.json"
+    assert DC.find_in_kaggle_inputs("val2017", want_dir=True, root=str(tmp / "input")) == src / "val2017"
+    assert DC.find_in_kaggle_inputs("nothing.json", root=str(tmp / "input")) is None
+
+    cfg = {"coco": {"split": "val2017"}, "paths": {"data_root": str(tmp / "data"), "download_cache": str(tmp / "dl")}}
+    old = (DC.in_kaggle, DC.KAGGLE_INPUT)
+    DC.in_kaggle, DC.KAGGLE_INPUT = (lambda: True), str(tmp / "input")        # pretend to be on Kaggle
+    try:
+        root = DC.prepare_annotations(cfg)
+        DC.fetch_images(cfg, [139])
+    finally:
+        DC.in_kaggle, DC.KAGGLE_INPUT = old
+    assert (root / "annotations" / "instances_val2017.json").exists()
+    assert (root / "val2017" / "000000000139.jpg").read_bytes() == b"img"
+
+
 if __name__ == "__main__":
     # Allow `python tests/test_core.py` without pytest: run every test_* function and print its name.
     for name, fn in list(globals().items()):
