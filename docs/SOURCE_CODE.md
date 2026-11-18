@@ -4,7 +4,7 @@ Heavy dependencies (torch, transformers, pycocotools, ultralytics) are imported 
 
 | File | Responsibility | Key API |
 |---|---|---|
-| `config.py` | Load `configs/default.yaml` (fast profile) or the file named by `DVD_CONFIG` (e.g. `full`), resolve paths (`/content/data` on Colab), apply tuned values | `load_config()`, `save_selected(cfg, **kv)`, `results_dir(cfg, *parts)` |
+| `config.py` | Detect Colab / Kaggle (`in_colab`, `in_kaggle`: dataset and zips go to scratch space on Kaggle), load `configs/default.yaml` (fast profile) or the file named by `DVD_CONFIG` (e.g. `full`), resolve paths (`/content/data` on Colab), apply tuned values | `load_config()`, `save_selected(cfg, **kv)`, `results_dir(cfg, *parts)` |
 | `paths.py` | Canonical cache file names (encode backend, VLM, view, mode, margin) | `det_cache`, `ver_cache`, `woodpecker_cache`, `vcd_cache`, `pope_cache` |
 | `io_utils.py` | Resumable per-image JSONL store, JSON helpers, seeding | `JsonlCache(path).todo(ids)/add(rec)/records(ids)`, `set_seed` |
 | `cropping.py` | Crop-and-zoom: expand box by margin, clip, upscale to 448 px | `expand_box`, `crop_and_zoom`, `fit_max_side` |

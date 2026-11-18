@@ -33,14 +33,15 @@ def notebook(cells, gpu=True):
 
 BOOT = code(r'''
 # ===================== Bootstrap (identical in every notebook) =====================
-import os, sys, subprocess  # paths, sys.path and shell commands (git clone, pip)
+import os, sys, subprocess, shutil  # paths, sys.path, shell commands (git clone, pip), folder copy
 IN_COLAB = "google.colab" in sys.modules
+IN_KAGGLE = (not IN_COLAB) and os.path.isdir("/kaggle/working")    # Kaggle notebook (needs Internet ON, see docs/KAGGLE_GUIDE.md)
 
 # Where the project lives on Google Drive. Upload the whole repo folder there (see docs/COLAB_GUIDE.md),
 # or set REPO_URL and it will be cloned into DRIVE_PROJECT on first run.
 DRIVE_PROJECT = "/content/drive/MyDrive/detect-verify-decide"
 REPO_URL = ""  # e.g. "https://github.com/<you>/detect-verify-decide.git"
-BRANCH = "main"  # git branch to take the latest code from (change it if you pushed to another branch)
+BRANCH = "kaggle-version"  # git branch to take the latest code from (change it if you push to another branch)
 
 if IN_COLAB:
     from google.colab import drive  # Colab only: mount Google Drive
@@ -51,6 +52,26 @@ if IN_COLAB:
         subprocess.run(["git", "-C", DRIVE_PROJECT, "fetch", "origin", BRANCH], check=False)
         subprocess.run(["git", "-C", DRIVE_PROJECT, "checkout", "FETCH_HEAD", "--", "src", "configs", "requirements.txt", "tools", "app"], check=False)
     PROJECT_ROOT = DRIVE_PROJECT
+elif IN_KAGGLE:
+    PROJECT_ROOT = "/kaggle/working/detect-verify-decide"
+    if not os.path.isdir(os.path.join(PROJECT_ROOT, "src", "dvd")):
+        import glob
+        attached = glob.glob("/kaggle/input/*/src/dvd") + glob.glob("/kaggle/input/*/*/src/dvd")   # project attached as a Kaggle Dataset
+        if attached:
+            shutil.copytree(os.path.dirname(os.path.dirname(attached[0])), PROJECT_ROOT)
+        elif REPO_URL:
+            url = REPO_URL
+            try:   # private repo: add a Kaggle secret named GITHUB_TOKEN (Add-ons -> Secrets)
+                from kaggle_secrets import UserSecretsClient
+                url = REPO_URL.replace("https://", f"https://{UserSecretsClient().get_secret('GITHUB_TOKEN')}@")
+            except Exception:
+                pass
+            r = subprocess.run(["git", "clone", "-q", "-b", BRANCH, url, PROJECT_ROOT], capture_output=True)
+            if r.returncode:   # (the message deliberately does not echo the command, which could contain the token)
+                raise RuntimeError("git clone failed: is Internet ON, REPO_URL / BRANCH right, and for a private repo the GITHUB_TOKEN secret set?")
+            subprocess.run(["git", "-C", PROJECT_ROOT, "remote", "set-url", "origin", REPO_URL])   # never keep the token in .git/config
+        else:
+            raise RuntimeError("Set REPO_URL (and BRANCH) above, or attach the project as a Kaggle Dataset.")
 else:
     PROJECT_ROOT = os.path.abspath(os.path.join(os.getcwd(), ".."))
 
@@ -61,8 +82,8 @@ print("PROJECT_ROOT =", PROJECT_ROOT)
 ''')
 
 INSTALL = code(r'''
-# Install dependencies (Colab already has torch/torchvision with CUDA). ~1-2 min per fresh runtime.
-if IN_COLAB:
+# Install dependencies (Colab / Kaggle already have torch/torchvision with CUDA). ~1-2 min per fresh runtime.
+if IN_COLAB or IN_KAGGLE:
     %pip install -q -r "{PROJECT_ROOT}/requirements.txt"
 ''')
 

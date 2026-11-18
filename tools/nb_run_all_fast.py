@@ -28,13 +28,14 @@ re-run from the top and finished steps are skipped). `results_fast/SUMMARY.md` c
 """),
     md("## 0 · Setup"),
     code(r'''
-# ---- bootstrap: Drive, project folder, latest code -------------------------------------------------------------------
+# ---- bootstrap: Drive (Colab) or /kaggle/working (Kaggle), project folder, latest code ---------------------------------
 import os, sys, subprocess, time, shutil, contextlib  # paths, sys.path, shell commands, clock, file copy, context-manager helper
 T0 = time.time()
 IN_COLAB = "google.colab" in sys.modules
+IN_KAGGLE = (not IN_COLAB) and os.path.isdir("/kaggle/working")    # Kaggle notebook (needs Internet ON, see docs/KAGGLE_GUIDE.md)
 DRIVE_PROJECT = "/content/drive/MyDrive/detect-verify-decide"
 REPO_URL = ""  # only needed if the project is not yet in Drive, e.g. "https://github.com/<you>/detect-verify-decide.git"
-BRANCH = "main"  # git branch to take the latest code from (change it if you pushed to another branch)
+BRANCH = "kaggle-version"  # git branch to take the latest code from (change it if you push to another branch)
 
 if IN_COLAB:
     from google.colab import drive  # Colab only: mount Google Drive
@@ -45,6 +46,26 @@ if IN_COLAB:
         subprocess.run(["git", "-C", DRIVE_PROJECT, "fetch", "origin", BRANCH], check=False)
         subprocess.run(["git", "-C", DRIVE_PROJECT, "checkout", "FETCH_HEAD", "--", "src", "configs", "requirements.txt", "tools", "app"], check=False)
     PROJECT_ROOT = DRIVE_PROJECT
+elif IN_KAGGLE:
+    PROJECT_ROOT = "/kaggle/working/detect-verify-decide"
+    if not os.path.isdir(os.path.join(PROJECT_ROOT, "src", "dvd")):
+        import glob
+        attached = glob.glob("/kaggle/input/*/src/dvd") + glob.glob("/kaggle/input/*/*/src/dvd")   # project attached as a Kaggle Dataset
+        if attached:
+            shutil.copytree(os.path.dirname(os.path.dirname(attached[0])), PROJECT_ROOT)
+        elif REPO_URL:
+            url = REPO_URL
+            try:   # private repo: add a Kaggle secret named GITHUB_TOKEN (Add-ons -> Secrets)
+                from kaggle_secrets import UserSecretsClient
+                url = REPO_URL.replace("https://", f"https://{UserSecretsClient().get_secret('GITHUB_TOKEN')}@")
+            except Exception:
+                pass
+            r = subprocess.run(["git", "clone", "-q", "-b", BRANCH, url, PROJECT_ROOT], capture_output=True)
+            if r.returncode:   # (the message deliberately does not echo the command, which could contain the token)
+                raise RuntimeError("git clone failed: is Internet ON, REPO_URL / BRANCH right, and for a private repo the GITHUB_TOKEN secret set?")
+            subprocess.run(["git", "-C", PROJECT_ROOT, "remote", "set-url", "origin", REPO_URL])   # never keep the token in .git/config
+        else:
+            raise RuntimeError("Set REPO_URL (and BRANCH) above, or attach the project as a Kaggle Dataset.")
 else:
     PROJECT_ROOT = os.path.abspath(os.path.join(os.getcwd(), ".."))
 assert os.path.isdir(os.path.join(PROJECT_ROOT, "src", "dvd")), f"src/dvd not found under {PROJECT_ROOT}"
@@ -53,15 +74,15 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, "src"))
 print("PROJECT_ROOT =", PROJECT_ROOT)
 '''),
     code(r'''
-# ---- dependencies (Colab keeps its own torch/CUDA build; the optional YOLO-World and Streamlit packages are skipped) ----
-if IN_COLAB:
+# ---- dependencies (Colab / Kaggle keep their own torch/CUDA build; the optional YOLO-World and Streamlit packages are skipped) ----
+if IN_COLAB or IN_KAGGLE:
     reqs = [l.split("#")[0].strip() for l in open(f"{PROJECT_ROOT}/requirements.txt", encoding="utf-8")]
     reqs = [r for r in reqs if r and not r.startswith(("ultralytics", "streamlit"))]
-    open("/content/requirements_fast.txt", "w").write("\n".join(reqs))
-    %pip install -q -r /content/requirements_fast.txt
+    open("/tmp/requirements_fast.txt", "w").write("\n".join(reqs))
+    %pip install -q -r /tmp/requirements_fast.txt
 '''),
     code(r'''
-# ---- config, results folder (fast local disk, copied to Drive after every step), timing helper ------------------------
+# ---- config, results folder (Colab: fast local disk, copied to Drive after every step; Kaggle: /kaggle/working), timing helper ----
 import json, numpy as np, pandas as pd, matplotlib.pyplot as plt  # json files, numpy arrays, pandas tables, matplotlib plots
 pd.set_option("display.precision", 4); pd.set_option("display.width", 220); pd.set_option("display.max_columns", 40)
 
@@ -70,6 +91,12 @@ RESULTS_LOCAL = "/content/dvd_results" if IN_COLAB else RESULTS_DRIVE
 if IN_COLAB:
     os.makedirs(RESULTS_DRIVE, exist_ok=True)
     shutil.copytree(RESULTS_DRIVE, RESULTS_LOCAL, dirs_exist_ok=True)       # resume from a previous session
+if IN_KAGGLE:   # resume: results of an earlier version, attached via Add Input -> Notebook output (or as a Dataset)
+    import glob
+    os.makedirs(RESULTS_LOCAL, exist_ok=True)
+    for prev in glob.glob("/kaggle/input/**/results_fast", recursive=True):
+        shutil.copytree(prev, RESULTS_LOCAL, dirs_exist_ok=True)
+        print("restored earlier results from", prev)
 
 from dvd.config import load_config, save_selected, results_dir  # load configs/default.yaml, save tuned values, results folders
 from dvd.io_utils import set_seed, save_json, load_json, JsonlCache  # seeding, JSON helpers and the resumable JSONL cache
@@ -92,8 +119,10 @@ def stage(name):
     print(f"<<< {name}: {TIMES[name] / 60:.1f} min   (session total {(time.time() - T0) / 60:.1f} min)")
 
 import torch  # PyTorch: GPU check and memory statistics
-assert torch.cuda.is_available(), "No GPU: Runtime -> Change runtime type -> T4 GPU"
-print("GPU:", torch.cuda.get_device_name(0))
+assert torch.cuda.is_available(), "No GPU: Colab: Runtime -> Change runtime type -> T4 GPU | Kaggle: Settings -> Accelerator -> GPU T4 x2"
+print("GPU:", torch.cuda.get_device_name(0), "| platform:", "Colab" if IN_COLAB else ("Kaggle" if IN_KAGGLE else "local"))
+if IN_KAGGLE and "P100" in torch.cuda.get_device_name(0):
+    print("WARNING: the Kaggle P100 is often not supported by the current PyTorch build; choose GPU T4 x2 instead.")
 print("results:", cfg["paths"]["results_root"], "| selected so far:", cfg["selected"] or "(none)")
 print({k: cfg[k] for k in ("coco", "margin_tuning")}, "| crop", cfg["verifier"]["crop_target_size"], "px | max candidates/img", cfg["detector"]["max_detections"])
 '''),
@@ -457,6 +486,8 @@ print("\n".join(L))
     code(r'''
 sync()
 print("stage times (min):", {k: round(v / 60, 1) for k, v in TIMES.items()})
-print(f"TOTAL this session: {(time.time() - T0) / 60:.0f} min | results copied to {RESULTS_DRIVE}")
+print(f"TOTAL this session: {(time.time() - T0) / 60:.0f} min | results in {RESULTS_DRIVE}")
+if IN_KAGGLE:
+    print("Kaggle keeps /kaggle/working only if you press Save Version -> Save & Run All (Commit); then download SUMMARY.md and the tables from the Output tab.")
 '''),
 ]

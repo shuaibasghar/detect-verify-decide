@@ -4,6 +4,7 @@
 - **Goal:** every experiment of the proposal in **one session (≈2 h target on a T4)**, models loaded once.
 - **Does:** setup and data → detector → speed check (measures your GPU and projects the long stages) → crop-margin search → verifier on all candidates (crop view) → global-view ablation → Decision Agent sweep and test evaluation → LLM-aggregator ablation → Woodpecker-style baseline → VCD baseline → POPE → main comparison with paired-bootstrap CIs → cost and online latency → error analysis → monitoring conditions → `SUMMARY.md`.
 - **Writes:** everything under `results_fast/` (Drive copy refreshed after every step; resumable).
+- **Platforms:** Colab (results copied to Drive after every step) and Kaggle (results in `/kaggle/working`, see [KAGGLE_GUIDE.md](KAGGLE_GUIDE.md)); detected automatically.
 - **Details and the claim-to-evidence map:** [FAST_RUN.md](FAST_RUN.md). The cells are written in `tools/nb_run_all_fast.py`.
 
 The numbered notebooks below are the same experiments split into separate, individually resumable steps. They use the same

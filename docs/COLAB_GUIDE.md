@@ -1,5 +1,7 @@
 # Running on Google Colab
 
+> Prefer Kaggle? See [KAGGLE_GUIDE.md](KAGGLE_GUIDE.md).
+
 > **Fastest path:** `notebooks/run_all_fast.ipynb` runs the whole proposal in one session (target ≈2 h on a T4). See [FAST_RUN.md](FAST_RUN.md).
 > The rest of this page covers the step-by-step notebooks 00–12.
 

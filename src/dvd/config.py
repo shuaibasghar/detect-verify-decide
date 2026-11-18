@@ -22,6 +22,16 @@ def in_colab() -> bool:
     return "google.colab" in sys.modules or "COLAB_RELEASE_TAG" in os.environ
 
 
+def in_kaggle() -> bool:
+    """True when running inside a Kaggle notebook (it always has the /kaggle/working output folder)."""
+    return not in_colab() and os.path.isdir("/kaggle/working")
+
+
+def _kaggle_tmp() -> str:
+    """Scratch folder on Kaggle that is NOT saved as notebook output (datasets and zips go here)."""
+    return "/kaggle/temp" if os.path.isdir("/kaggle/temp") else "/tmp"
+
+
 def project_root() -> Path:
     """Project root: $DVD_ROOT if set (notebooks set it), else two levels above this package."""
     env = os.environ.get("DVD_ROOT")
@@ -45,11 +55,14 @@ def _resolve_paths(cfg: dict, root: Path) -> None:
     """Expand `auto` and `${ROOT}` in cfg["paths"] and create the folders."""
     paths = cfg["paths"]
     for k, v in list(paths.items()):
-        # `auto` data root: fast local disk on Colab, inside the project elsewhere.
+        # `auto` data root: fast local disk on Colab, scratch folder on Kaggle, inside the project elsewhere.
         if v == "auto" and k == "data_root":
-            v = "/content/data" if in_colab() else str(root / "data")
+            v = "/content/data" if in_colab() else (f"{_kaggle_tmp()}/dvd_data" if in_kaggle() else str(root / "data"))
         # Substitute the project root placeholder.
         paths[k] = str(v).replace("${ROOT}", str(root))
+        # On Kaggle everything under /kaggle/working is saved as notebook output, so the big dataset zips go to scratch.
+        if k == "download_cache" and in_kaggle():
+            paths[k] = f"{_kaggle_tmp()}/dvd_downloads"
     for k in paths:
         Path(paths[k]).mkdir(parents=True, exist_ok=True)
 

@@ -274,6 +274,25 @@ def test_config_profiles():
     assert fast["verifier"]["crop_target_size"] % fast["verifier"]["min_crop_side"] == 0
 
 
+def test_kaggle_paths():
+    """On Kaggle the dataset and the zips go to scratch space (not saved as notebook output)."""
+    import tempfile
+
+    import dvd.config as C
+
+    tmp = tempfile.mkdtemp()
+    old = (C.in_kaggle, C._kaggle_tmp)
+    # Pretend to be on Kaggle, with a temp folder standing in for /kaggle/temp.
+    C.in_kaggle, C._kaggle_tmp = (lambda: True), (lambda: tmp)
+    try:
+        cfg = C.load_config(overrides={"paths": {"results_root": tmp + "/r"}}, use_selected=False)
+    finally:
+        C.in_kaggle, C._kaggle_tmp = old
+    assert cfg["paths"]["data_root"] == tmp + "/dvd_data"
+    assert cfg["paths"]["download_cache"] == tmp + "/dvd_downloads"
+    assert cfg["paths"]["results_root"] == tmp + "/r"
+
+
 if __name__ == "__main__":
     # Allow `python tests/test_core.py` without pytest: run every test_* function and print its name.
     for name, fn in list(globals().items()):

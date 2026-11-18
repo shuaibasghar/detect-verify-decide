@@ -10,6 +10,8 @@ trade-off with an online latency measurement, the error analysis and the monitor
 
 ## How to run
 
+(Kaggle instead of Colab: see [KAGGLE_GUIDE.md](KAGGLE_GUIDE.md); the notebook detects the platform itself.)
+
 1. Push the repo. In Colab: *File → Open notebook → GitHub → `notebooks/run_all_fast.ipynb`*; *Runtime → T4 GPU*.
 2. *Runtime → Run all*. Every step is resumable: after a disconnect run again from the top, and finished steps are skipped
    (the results are copied to `MyDrive/detect-verify-decide/results_fast/` after every step).

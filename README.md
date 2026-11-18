@@ -27,7 +27,7 @@ flowchart LR
 3. **Step by step / full protocol:** notebooks `00 → 01 → 02 → 03 → 05 → 06 → 07 → 08 → 09 → 10` (04 can run in parallel; 11 and 12 optional). They read the same `configs/default.yaml`; for the original 500 / 1000-image protocol (≈15–20 GPU hours) set `DVD_CONFIG=full`.
 4. **Live demo UI (optional):** run `notebooks/12_streamlit_demo.ipynb` to open the Streamlit app, which shows which agent is running, the progress percentage and a feedback log. See [docs/UI_GUIDE.md](docs/UI_GUIDE.md).
 
-Each notebook installs the requirements, mounts Drive and **resumes automatically** after a disconnect. Details: [docs/COLAB_GUIDE.md](docs/COLAB_GUIDE.md).
+Each notebook installs the requirements, mounts Drive and **resumes automatically** after a disconnect. Details: [docs/COLAB_GUIDE.md](docs/COLAB_GUIDE.md). **Kaggle** works too (same notebooks, `BRANCH`/`REPO_URL` in the first cell): [docs/KAGGLE_GUIDE.md](docs/KAGGLE_GUIDE.md).
 
 ## Folder structure
 
@@ -86,6 +86,7 @@ detect-verify-decide/
 | [docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md) | Step-by-step plan: phases → steps → sub-steps with checkboxes, gates, objective-to-evidence map, risks |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design, agent interfaces, independence guarantees, data flow, cache files, compute budget |
 | [docs/FAST_RUN.md](docs/FAST_RUN.md) | The one-notebook fast run: what is reduced and why, claim-to-evidence map, knobs, limits |
+| [docs/KAGGLE_GUIDE.md](docs/KAGGLE_GUIDE.md) | Running the same notebooks on Kaggle: setup, secrets for a private repo, saving results, resuming |
 | [docs/COLAB_GUIDE.md](docs/COLAB_GUIDE.md) | Setting up Drive/GitHub, run order, time estimates, quick vs full runs, troubleshooting |
 | [docs/NOTEBOOKS.md](docs/NOTEBOOKS.md) | What each notebook does, reads and writes |
 | [docs/SOURCE_CODE.md](docs/SOURCE_CODE.md) | Module-by-module API reference, record formats, how to extend |
