@@ -14,3 +14,6 @@ results/*
 
 # Model weights downloaded by Ultralytics
 *.pt
+
+# Fast-profile outputs (regenerable)
+results_fast/

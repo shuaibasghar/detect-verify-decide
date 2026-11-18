@@ -3,6 +3,7 @@
 Lets the demo app and the mock agents run without downloading COCO annotations.
 """
 
+# (category_id, name) pairs. COCO ids are NOT contiguous (1..90 with gaps), so the id is kept next to the name.
 COCO_CATEGORIES = [
     (1, "person"), (2, "bicycle"), (3, "car"), (4, "motorcycle"), (5, "airplane"), (6, "bus"), (7, "train"),
     (8, "truck"), (9, "boat"), (10, "traffic light"), (11, "fire hydrant"), (13, "stop sign"),
@@ -19,6 +20,9 @@ COCO_CATEGORIES = [
     (82, "refrigerator"), (84, "book"), (85, "clock"), (86, "vase"), (87, "scissors"), (88, "teddy bear"),
     (89, "hair drier"), (90, "toothbrush"),
 ]
+# Just the class names, in COCO order (used as the detector vocabulary).
 COCO_NAMES = [n for _, n in COCO_CATEGORIES]
+# name -> COCO category id lookup.
 COCO_NAME_TO_ID = {n: i for i, n in COCO_CATEGORIES}
+# Sanity check: COCO has exactly 80 detection classes.
 assert len(COCO_CATEGORIES) == 80

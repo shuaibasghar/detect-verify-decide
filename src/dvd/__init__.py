@@ -5,4 +5,5 @@ modules that need them, so `dvd.metrics`, `dvd.decision` and `dvd.cropping` can 
 (and unit-tested) on a machine without a GPU.
 """
 
+# Package version string (shown by tools and logs).
 __version__ = "0.1.0"

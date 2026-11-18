@@ -23,8 +23,8 @@ flowchart LR
 ## Quick start (Google Colab)
 
 1. Upload this folder to Google Drive as **`MyDrive/detect-verify-decide/`**, or push it to GitHub and set `REPO_URL` in the first cell of each notebook.
-2. Open `notebooks/00_setup_and_smoke_test.ipynb` in Colab and set *Runtime → T4 GPU*.
-3. Run the notebooks in order: **00 → 01 → 02 → 03 → 05 → 06 → 07 → 08 → 09 → 10**. Notebook 04 (POPE) can run in parallel, and 11 and 12 are optional.
+2. **Everything in one go (≈2 h target on a T4):** open `notebooks/run_all_fast.ipynb`, set *Runtime → T4 GPU*, *Run all*. It runs every experiment of the proposal in one session on the *fast profile* (150 held-out / 300 test images) and writes `results_fast/SUMMARY.md`. See [docs/FAST_RUN.md](docs/FAST_RUN.md).
+3. **Step by step / full protocol:** notebooks `00 → 01 → 02 → 03 → 05 → 06 → 07 → 08 → 09 → 10` (04 can run in parallel; 11 and 12 optional). They read the same `configs/default.yaml`; for the original 500 / 1000-image protocol (≈15–20 GPU hours) set `DVD_CONFIG=full`.
 4. **Live demo UI (optional):** run `notebooks/12_streamlit_demo.ipynb` to open the Streamlit app, which shows which agent is running, the progress percentage and a feedback log. See [docs/UI_GUIDE.md](docs/UI_GUIDE.md).
 
 Each notebook installs the requirements, mounts Drive and **resumes automatically** after a disconnect. Details: [docs/COLAB_GUIDE.md](docs/COLAB_GUIDE.md).
@@ -36,7 +36,8 @@ detect-verify-decide/
 ├── README.md                     ← you are here
 ├── requirements.txt              ← Python deps (Colab keeps its own torch)
 ├── configs/
-│   └── default.yaml              ← every experiment setting (models, splits, grids, prompts)
+│   ├── default.yaml              ← FAST profile (default): every experiment setting, ~2 h on a T4
+│   └── full.yaml                 ← original full protocol (DVD_CONFIG=full), ~15-20 GPU hours
 ├── src/dvd/                      ← reusable package imported by all notebooks
 │   ├── config.py  paths.py  io_utils.py
 │   ├── cropping.py               ← crop-and-zoom
@@ -55,7 +56,8 @@ detect-verify-decide/
 │   └── data/                     ← coco.py, pope.py, download.py
 ├── app/
 │   └── streamlit_app.py          ← live demo UI (agent steps, progress %, feedback log)
-├── notebooks/                    ← run on Colab, in order
+├── notebooks/                    ← run on Colab
+│   ├── run_all_fast.ipynb        ← the whole proposal in one session (start here)
 │   ├── 00_setup_and_smoke_test.ipynb
 │   ├── 01_data_preparation.ipynb
 │   ├── 02_detector_agent_baseline.ipynb
@@ -71,9 +73,10 @@ detect-verify-decide/
 │   └── 12_streamlit_demo.ipynb
 ├── docs/                         ← all documentation (see index below)
 ├── tests/test_core.py            ← CPU-only unit tests (no GPU needed)
-├── tools/build_notebooks.py      ← regenerates notebooks/ (overwrites manual edits)
+├── tools/build_notebooks.py      ← regenerates notebooks/ (overwrites manual edits); run_all_fast cells live in tools/nb_run_all_fast.py
 ├── data/                         ← dataset zips cache + custom images (git-ignored)
-└── results/                      ← caches, tables, figures (git-ignored)
+├── results_fast/                 ← caches, tables, figures, SUMMARY.md of the fast profile (git-ignored)
+└── results/                      ← same for the full profile (git-ignored)
 ```
 
 ## Documentation
@@ -82,6 +85,7 @@ detect-verify-decide/
 |---|---|
 | [docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md) | Step-by-step plan: phases → steps → sub-steps with checkboxes, gates, objective-to-evidence map, risks |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design, agent interfaces, independence guarantees, data flow, cache files, compute budget |
+| [docs/FAST_RUN.md](docs/FAST_RUN.md) | The one-notebook fast run: what is reduced and why, claim-to-evidence map, knobs, limits |
 | [docs/COLAB_GUIDE.md](docs/COLAB_GUIDE.md) | Setting up Drive/GitHub, run order, time estimates, quick vs full runs, troubleshooting |
 | [docs/NOTEBOOKS.md](docs/NOTEBOOKS.md) | What each notebook does, reads and writes |
 | [docs/SOURCE_CODE.md](docs/SOURCE_CODE.md) | Module-by-module API reference, record formats, how to extend |

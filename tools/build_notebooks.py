@@ -1,8 +1,8 @@
 """Generates notebooks/*.ipynb for the Detect-Verify-Decide project (nbformat 4, no dependency)."""
-import json
-import sys
-import textwrap
-from pathlib import Path
+import json  # write the .ipynb files (they are JSON)
+import sys  # command-line arguments of this script
+import textwrap  # strip the indentation of the cell source strings
+from pathlib import Path  # portable file paths
 
 OUT = Path(sys.argv[1])
 ONLY = set(sys.argv[2:])  # optional: regenerate only these notebooks, e.g. 12_streamlit_demo
@@ -10,15 +10,18 @@ OUT.mkdir(parents=True, exist_ok=True)
 
 
 def md(s):
+    """Build a Markdown cell from text (indentation stripped, split into lines as nbformat expects)."""
     return {"cell_type": "markdown", "metadata": {}, "source": textwrap.dedent(s).strip("\n").splitlines(True)}
 
 
 def code(s):
+    """Build a code cell from source text (no outputs, never executed)."""
     return {"cell_type": "code", "metadata": {}, "execution_count": None, "outputs": [],
             "source": textwrap.dedent(s).strip("\n").splitlines(True)}
 
 
 def notebook(cells, gpu=True):
+    """Wrap cells into a complete notebook dict (nbformat 4); `gpu` asks Colab for a T4 accelerator by default."""
     meta = {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
             "language_info": {"name": "python"},
             "colab": {"provenance": [], "toc_visible": True}}
@@ -30,19 +33,23 @@ def notebook(cells, gpu=True):
 
 BOOT = code(r'''
 # ===================== Bootstrap (identical in every notebook) =====================
-import os, sys, subprocess
+import os, sys, subprocess  # paths, sys.path and shell commands (git clone, pip)
 IN_COLAB = "google.colab" in sys.modules
 
 # Where the project lives on Google Drive. Upload the whole repo folder there (see docs/COLAB_GUIDE.md),
 # or set REPO_URL and it will be cloned into DRIVE_PROJECT on first run.
 DRIVE_PROJECT = "/content/drive/MyDrive/detect-verify-decide"
 REPO_URL = ""  # e.g. "https://github.com/<you>/detect-verify-decide.git"
+BRANCH = "main"  # git branch to take the latest code from (change it if you pushed to another branch)
 
 if IN_COLAB:
-    from google.colab import drive
+    from google.colab import drive  # Colab only: mount Google Drive
     drive.mount("/content/drive")
     if not os.path.isdir(DRIVE_PROJECT) and REPO_URL:
-        subprocess.run(["git", "clone", REPO_URL, DRIVE_PROJECT], check=True)
+        subprocess.run(["git", "clone", "-b", BRANCH, REPO_URL, DRIVE_PROJECT], check=True)
+    elif os.path.isdir(os.path.join(DRIVE_PROJECT, ".git")):   # pick up the latest pushed code (never touches your notebooks/results)
+        subprocess.run(["git", "-C", DRIVE_PROJECT, "fetch", "origin", BRANCH], check=False)
+        subprocess.run(["git", "-C", DRIVE_PROJECT, "checkout", "FETCH_HEAD", "--", "src", "configs", "requirements.txt", "tools", "app"], check=False)
     PROJECT_ROOT = DRIVE_PROJECT
 else:
     PROJECT_ROOT = os.path.abspath(os.path.join(os.getcwd(), ".."))
@@ -60,16 +67,16 @@ if IN_COLAB:
 ''')
 
 CFG = code(r'''
-import json, numpy as np, pandas as pd, matplotlib.pyplot as plt
-from dvd.config import load_config, save_selected, results_dir
-from dvd.io_utils import set_seed, save_json, load_json, JsonlCache
-from dvd import paths
+import json, numpy as np, pandas as pd, matplotlib.pyplot as plt  # json files, numpy arrays, pandas tables, matplotlib plots
+from dvd.config import load_config, save_selected, results_dir  # load configs/default.yaml, save tuned values, results folders
+from dvd.io_utils import set_seed, save_json, load_json, JsonlCache  # seeding, JSON helpers and the resumable JSONL cache
+from dvd import paths  # cache-file path helpers
 
 cfg = load_config()
 set_seed(cfg["seed"])
 pd.set_option("display.precision", 4)
 try:
-    import torch
+    import torch  # PyTorch: GPU check and memory statistics
     print("GPU:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "none (CPU only - expect very slow runs)")
 except ImportError:
     print("torch not installed")
@@ -79,16 +86,18 @@ print("tuned params:", cfg["selected"] or "(none yet)")
 ''')
 
 COCO = code(r'''
-from dvd.data.coco import prepare_coco, CocoData, load_splits
-prepare_coco(cfg)          # after a runtime restart this re-extracts from the zip cached on Drive (~1-2 min)
+from dvd.data.coco import prepare_annotations, fetch_images, CocoData, load_splits  # COCO annotations, image download, splits
+prepare_annotations(cfg)   # annotation json only (the 241 MB zip is cached on Drive)
 coco = CocoData(cfg)
 splits = load_splits(cfg)
 HELDOUT, TEST = splits["heldout"], splits["test"]
+fetch_images(cfg, HELDOUT + TEST)   # only these images (a few hundred files), not the whole 778 MB val2017 zip
 print(f"held-out: {len(HELDOUT)} images | test: {len(TEST)} images")
 ''')
 
 
 def header(title, purpose, inputs, outputs, runtime, objective):
+    """First Markdown cell of a notebook: title, purpose and a table of objective / inputs / outputs / runtime."""
     return md(f"""
 # {title}
 
@@ -119,21 +128,21 @@ NB["00_setup_and_smoke_test"] = [
     BOOT, INSTALL, CFG,
     code(r'''
 !nvidia-smi
-import transformers, PIL
+import transformers, PIL  # version printout of the two core libraries
 print("transformers", transformers.__version__, "| torch", torch.__version__, "| PIL", PIL.__version__)
 '''),
     md("## 2. A test image\nCOCO `000000039769` (two cats on a couch) is fetched directly; no dataset download needed yet."),
     code(r'''
-import io, urllib.request
-from PIL import Image
+import io, urllib.request  # download the test image straight into memory
+from PIL import Image  # Pillow image type
 url = "http://images.cocodataset.org/val2017/000000039769.jpg"
 image = Image.open(io.BytesIO(urllib.request.urlopen(url).read())).convert("RGB")
 plt.imshow(image); plt.axis("off"); plt.show()
 '''),
     md("## 3. Detector Agent\nA small vocabulary is used here; the real runs use all 80 COCO classes."),
     code(r'''
-from dvd.agents.detector import build_detector
-from dvd.viz import show_detections
+from dvd.agents.detector import build_detector  # Detector Agent (Grounding DINO): factory
+from dvd.viz import show_detections  # plotting helpers (detections overlay, PR frontier, crop gallery)
 vocab = ["cat", "dog", "couch", "remote", "bed", "person", "tv"]
 detector = build_detector(cfg, vocab, {n: k for k, n in enumerate(vocab)})
 det = detector.detect(image)
@@ -142,7 +151,7 @@ show_detections(image, det["boxes"], det["labels"], det["scores"], title="Detect
 '''),
     md("## 4. Verifier Agent (crop-and-zoom, label-blind to confidence)"),
     code(r'''
-from dvd.agents.verifier import build_verifier, make_views
+from dvd.agents.verifier import build_verifier, make_views  # Verifier Agent (frozen Qwen2-VL): factory and crop builder
 verifier = build_verifier(cfg)
 views = make_views(image, det["boxes"], cfg, "crop")
 out = verifier.verify(views, det["labels"])
@@ -157,7 +166,7 @@ plt.show()
 '''),
     md("## 5. Hallucination probe\nAsk about objects that are **not** in the image. A well-behaved verifier should give low P(yes)."),
     code(r'''
-from dvd.cropping import fit_max_side
+from dvd.cropping import fit_max_side  # crop-and-zoom / image resizing helpers
 full = fit_max_side(image, cfg["verifier"]["full_image_max_side"])
 qs = [f"Is there a {o} in the image? Answer yes or no." for o in ["cat", "remote", "dog", "car", "pizza"]]
 for q, p in zip(qs, verifier.yes_no([full] * len(qs), qs)):
@@ -165,8 +174,8 @@ for q, p in zip(qs, verifier.yes_no([full] * len(qs), qs)):
 '''),
     md("## 6. Full online pipeline (Detect -> Verify uncertain band -> Decide)"),
     code(r'''
-from dvd.agents.decision import RuleDecisionAgent
-from dvd.pipeline import DetectVerifyDecide
+from dvd.agents.decision import RuleDecisionAgent  # Decision Agent: the accept/reject rule and the optional LLM aggregator
+from dvd.pipeline import DetectVerifyDecide  # cached offline stages and the online Detect-Verify-Decide pipeline
 pipe = DetectVerifyDecide(detector, verifier, RuleDecisionAgent(tau_low=0.25, tau_high=0.6), cfg)
 res = pipe(image)
 status = ["accepted" if a else "rejected" for a in res["accept"]]
@@ -191,13 +200,14 @@ NB["01_data_preparation"] = [
     header("01 · Data preparation",
            "Download COCO val2017, create the seeded held-out (tuning) / test split, inspect POPE, and pre-compute "
            "category co-occurrence statistics for the error analysis.",
-           "internet", "`results/splits.json`, `results/data/*.json|csv`", "~10 min (≈1 GB download, cached on Drive)",
+           "internet", "`results_fast/splits.json`, `results_fast/data/*.json|csv`", "≈3 min (annotation zip 241 MB + a few hundred images)",
            "Objective 2 (datasets for evaluation)"),
     BOOT, INSTALL, CFG,
-    md("## 1. COCO val2017\nZips are cached in `data/downloads/` on Drive (persistent); images are extracted to the fast local disk."),
+    md("## 1. COCO val2017\nThe annotation zip is cached in `data/downloads/` on Drive (persistent). Only the images of the splits are downloaded, "
+       "to the fast local disk (set `DVD_CONFIG=full` for the original 1000-image protocol)."),
     code(r'''
-from dvd.data.coco import prepare_coco, CocoData, make_splits
-prepare_coco(cfg)
+from dvd.data.coco import prepare_annotations, fetch_images, CocoData, make_splits  # COCO annotations, image download, splits
+prepare_annotations(cfg)
 coco = CocoData(cfg)
 n_inst = len(coco.coco.getAnnIds(iscrowd=False))
 print(f"{len(coco.image_ids)} images, {n_inst} non-crowd instances, {len(coco.cat_ids)} categories")
@@ -214,7 +224,9 @@ cat_counts.sort_values(ascending=False).to_csv(results_dir(cfg, "data") / "categ
 splits = make_splits(cfg, coco.image_ids)
 HELDOUT, TEST = splits["heldout"], splits["test"]
 assert not set(HELDOUT) & set(TEST)
+fetch_images(cfg, HELDOUT + TEST)
 def split_stats(ids):
+    # Summary of a split: number of images, instances, instances per image and images without objects.
     g = coco.gts(ids)
     n = [int((~v["iscrowd"]).sum()) for v in g.values()]
     return {"images": len(ids), "instances": int(np.sum(n)), "inst/img": float(np.mean(n)), "empty images": int(np.sum(np.array(n) == 0))}
@@ -222,7 +234,7 @@ pd.DataFrame({"held-out": split_stats(HELDOUT), "test": split_stats(TEST)})
 '''),
     md("## 3. POPE (verifier evaluated in isolation)\nThree negative-sampling settings, 3000 questions each, 50 % yes."),
     code(r'''
-from dvd.data.pope import iter_pope
+from dvd.data.pope import iter_pope  # POPE benchmark loader
 rows = []
 for s in cfg["pope"]["settings"]:
     items = list(iter_pope(cfg, s, max_n=cfg["pope"]["max_per_setting"]))
@@ -238,7 +250,7 @@ pope_stats.to_csv(results_dir(cfg, "data") / "pope_stats.csv", index=False)
        "Li et al. report that hallucinated objects concentrate on classes that co-occur with objects truly present. "
        "We store, for each class, its 10 most frequent co-occurring classes."),
     code(r'''
-from dvd.analysis import cooccurrence_topk
+from dvd.analysis import cooccurrence_topk  # per-candidate error-analysis tables and co-occurrence statistics
 cooc = cooccurrence_topk(coco, k=10)
 save_json({str(k): sorted(v) for k, v in cooc.items()}, results_dir(cfg, "data") / "cooccurrence_top10.json")
 for c in [1, 3, 62]:
@@ -254,18 +266,18 @@ NB["02_detector_agent_baseline"] = [
            "(c ≥ box_threshold), and evaluate the single-pass detector across confidence thresholds. "
            "Includes the go / no-go checkpoint from the work plan.",
            "COCO + `results/splits.json`", "`results/detections/*.jsonl`, `results/detector/*`",
-           "Grounding DINO-T: ≈0.5–1.5 s/img → held-out ≈10 min, test (1000) ≈20 min",
+           "Grounding DINO-T: ≈0.5–1.5 s/img → fast profile (150 + 300 images) ≈8 min",
            "Objective 1 (Detector Agent), Objective 2 (baseline i)"),
     BOOT, INSTALL, CFG, COCO,
     code(r'''
-from dvd.agents.detector import build_detector
-from dvd.pipeline import run_detection_stage
+from dvd.agents.detector import build_detector  # Detector Agent (Grounding DINO): factory
+from dvd.pipeline import run_detection_stage  # cached offline stages and the online Detect-Verify-Decide pipeline
 detector = build_detector(cfg, coco.cat_names, coco.name_to_cat_id)
 print("backend:", cfg["detector"]["backend"], "| prompts per image:", getattr(detector, "prompts", ["(single pass)"]))
 '''),
     md("## 1. Go / no-go checkpoint (50 held-out images)\nThe same cache file is used, so this work is not repeated later."),
     code(r'''
-from dvd.metrics import DetectionEvaluator, sweep_detector_only, select_best
+from dvd.metrics import DetectionEvaluator, sweep_detector_only, select_best  # matching, metrics, sweeps, AUROC, POPE scores
 probe = HELDOUT[:50]
 det_probe = run_detection_stage(detector, probe, paths.det_cache(cfg, "heldout"), coco.image, "detect probe")
 ev = DetectionEvaluator(det_probe, coco.gts(probe), cfg["coco"]["iou_threshold"])
@@ -304,7 +316,7 @@ plt.show()
     md("## 4. Sanity check with official COCO mAP\nCandidates below `box_threshold` were discarded, so mAP is a lower bound of the detector's published value. "
        "Use it only to confirm the label mapping is right (mAP should be clearly non-trivial)."),
     code(r'''
-from pycocotools.cocoeval import COCOeval
+from pycocotools.cocoeval import COCOeval  # official COCO mAP evaluator (sanity check)
 dets = [{"image_id": i, "category_id": c, "bbox": [b[0], b[1], b[2] - b[0], b[3] - b[1]], "score": s}
         for i, r in det_t.items() for b, s, c in zip(r["boxes"], r["scores"], r["category_ids"])]
 E = COCOeval(coco.coco, coco.coco.loadRes(dets), "bbox"); E.params.imgIds = TEST
@@ -312,7 +324,7 @@ E.evaluate(); E.accumulate(); E.summarize()
 '''),
     md("## 5. Cost of the detector and save"),
     code(r'''
-from dvd.cost import detector_cost
+from dvd.cost import detector_cost  # latency timer and cost model
 dcost = detector_cost(det_t); print(dcost, f"-> {1 / dcost['det_latency_s']:.2f} FPS")
 out = results_dir(cfg, "detector")
 rows_h.to_csv(out / "detector_only_sweep_heldout.csv", index=False)
@@ -322,7 +334,7 @@ save_selected(cfg, detector_only_tau=tau_star)
 '''),
     md("## 6. Examples"),
     code(r'''
-from dvd.viz import show_detections
+from dvd.viz import show_detections  # plotting helpers (detections overlay, PR frontier, crop gallery)
 fig, axes = plt.subplots(2, 3, figsize=(18, 10))
 for ax, iid in zip(axes.ravel(), TEST[:6]):
     r = det_t[iid]; keep = [k for k, s in enumerate(r["scores"]) if s >= tau_star]
@@ -340,14 +352,14 @@ NB["03_verifier_agent_crop_verification"] = [
            "held-out and test. Also runs the global-view ablation (verifier sees the full image) and, optionally, the fully "
            "label-blind open-answer mode.",
            "`results/detections/*.jsonl`", "`results/verifier/*.jsonl`, `results/tuning/selected.json` (crop_margin), `results/verifier/*.csv`",
-           "≈0.05–0.15 s per crop. Margin search ≈30 min; held-out + test ≈40–60 min; global ablation ≈ same",
+           "fast profile: margin search ≈5 min; held-out + test ≈10–15 min; global ablation ≈5–10 min",
            "Objective 1 (Verifier Agent), Objective 3 (ablation of evidence separation)"),
     BOOT, INSTALL, CFG, COCO,
     code(r'''
-from dvd.agents.verifier import build_verifier
-from dvd.pipeline import run_verification_stage
-from dvd.experiments import SplitData
-from dvd.metrics import auroc, TP, FP
+from dvd.agents.verifier import build_verifier  # Verifier Agent (frozen Qwen2-VL): factory and crop builder
+from dvd.pipeline import run_verification_stage  # cached offline stages and the online Detect-Verify-Decide pipeline
+from dvd.experiments import SplitData  # methods over identical candidates: sweeps, operating points, evaluation, costs
+from dvd.metrics import auroc, TP, FP  # matching, metrics, sweeps, AUROC, POPE scores
 H = SplitData(cfg, coco, "heldout", HELDOUT)
 T = SplitData(cfg, coco, "test", TEST)
 verifier = build_verifier(cfg)
@@ -390,6 +402,7 @@ if RUN_GLOBAL_ABLATION:
     md("## 4. Verifier diagnostics on test"),
     code(r'''
 def diag(ver, data, name):
+    # Verifier diagnostics on a split: AUROC, share of FPs rejected, share of TPs wrongly rejected, yes-rate, time per call.
     y = np.concatenate([data.labels[i] for i in data.ids]); p = np.concatenate([np.asarray(ver[i]["p_yes"]) for i in data.ids])
     k = y != -1; y, p = y[k], p[k]
     t = sum(r["verify_time_s"] for r in ver.values()) / max(1, sum(r["verify_invocations"] for r in ver.values()))
@@ -432,17 +445,17 @@ NB["04_verifier_pope_eval"] = [
            "settings (random, popular, adversarial). Report accuracy, precision, recall, F1 and Yes-rate. Visual Contrastive "
            "Decoding (α=1, β=0.1, noise step 500) is evaluated on the same questions as a decoding-time reference.",
            "`lmms-lab/POPE` (Hugging Face)", "`results/pope/*.jsonl`, `results/pope/pope_results.csv`",
-           "plain ≈0.1 s/question → ≈15–25 min for 9000; VCD ≈2× that",
+           "fast profile (3 × 300 questions): plain ≈2 min, VCD ≈5 min",
            "Objective 2 (verifier on POPE), baseline iii at the verifier level"),
     BOOT, INSTALL, CFG,
     code(r'''
-from dvd.agents.verifier import build_verifier
-from dvd.data.pope import iter_pope
-from dvd.metrics import pope_metrics
-from dvd.cropping import fit_max_side
-from dvd.baselines.vcd import vcd_yes_no
-from dvd.cost import Timer
-from tqdm.auto import tqdm
+from dvd.agents.verifier import build_verifier  # Verifier Agent (frozen Qwen2-VL): factory and crop builder
+from dvd.data.pope import iter_pope  # POPE benchmark loader
+from dvd.metrics import pope_metrics  # matching, metrics, sweeps, AUROC, POPE scores
+from dvd.cropping import fit_max_side  # crop-and-zoom / image resizing helpers
+from dvd.baselines.vcd import vcd_yes_no  # baseline (iii): Visual Contrastive Decoding
+from dvd.cost import Timer  # latency timer and cost model
+from tqdm.auto import tqdm  # progress bars
 verifier = build_verifier(cfg)
 SIDE = cfg["verifier"]["full_image_max_side"]
 SUFFIX = " Answer yes or no."
@@ -451,9 +464,11 @@ RUN_VCD = True
 '''),
     code(r'''
 def run_pope(setting, method):
+    # Run (or resume) one POPE setting with plain or VCD yes/no and return its metrics.
     cache = JsonlCache(paths.pope_cache(cfg, setting, method), key="idx")
     batch = []
     def flush():
+        # Score the collected batch, write one cache line per question, and empty the batch.
         imgs = [fit_max_side(b["image"], SIDE) for b in batch]; qs = [b["question"].strip() + SUFFIX for b in batch]
         with Timer() as t:
             p = verifier.yes_no(imgs, qs) if method == "plain" else vcd_yes_no(verifier, imgs, qs, cfg["vcd"]["alpha"],
@@ -502,9 +517,9 @@ NB["05_decision_agent_and_pipeline"] = [
            "Objective 1 (Decision Agent), Objective 2 (pipeline vs single-pass detector)"),
     BOOT, INSTALL, CFG, COCO,
     code(r'''
-from dvd.experiments import SplitData, available_methods, sweep, operating_point, evaluate_row, PROPOSED, DET_ONLY
-from dvd.metrics import decision_breakdown
-from dvd.viz import plot_pr
+from dvd.experiments import SplitData, available_methods, sweep, operating_point, evaluate_row, PROPOSED, DET_ONLY  # methods over identical candidates: sweeps, operating points, evaluation, costs
+from dvd.metrics import decision_breakdown  # matching, metrics, sweeps, AUROC, POPE scores
+from dvd.viz import plot_pr  # plotting helpers (detections overlay, PR frontier, crop gallery)
 H = SplitData(cfg, coco, "heldout", HELDOUT); T = SplitData(cfg, coco, "test", TEST)
 MH, MT = available_methods(cfg, H), available_methods(cfg, T)
 assert PROPOSED in MH and PROPOSED in MT, "crop verifier caches missing - run notebook 03"
@@ -562,10 +577,10 @@ pd.DataFrame(rows_t[PROPOSED]).to_csv(results_dir(cfg, "pipeline") / "dvd_sweep_
     code(r'''
 RUN_LLM_AGGREGATOR = False
 if RUN_LLM_AGGREGATOR:
-    from dvd.agents.verifier import build_verifier
-    from dvd.agents.decision import LLMAggregatorAgent, rule_accept
-    from dvd.metrics import DetectionEvaluator
-    from tqdm.auto import tqdm
+    from dvd.agents.verifier import build_verifier  # Verifier Agent (frozen Qwen2-VL): factory and crop builder
+    from dvd.agents.decision import LLMAggregatorAgent, rule_accept  # Decision Agent: the accept/reject rule and the optional LLM aggregator
+    from dvd.metrics import DetectionEvaluator  # matching, metrics, sweeps, AUROC, POPE scores
+    from tqdm.auto import tqdm  # progress bars
     agg = LLMAggregatorAgent(build_verifier(cfg))
     sub = HELDOUT[: cfg["decision"]["llm_aggregator_images"]]
     ev = DetectionEvaluator({i: H.det[i] for i in sub}, {i: H.gts[i] for i in sub}, cfg["coco"]["iou_threshold"])
@@ -582,11 +597,11 @@ if RUN_LLM_AGGREGATOR:
 '''),
     md("## 7. Online pipeline demo (gated: only the uncertain band is verified)"),
     code(r'''
-from dvd.agents.detector import build_detector
-from dvd.agents.verifier import build_verifier
-from dvd.agents.decision import RuleDecisionAgent
-from dvd.pipeline import DetectVerifyDecide
-from dvd.viz import show_detections
+from dvd.agents.detector import build_detector  # Detector Agent (Grounding DINO): factory
+from dvd.agents.verifier import build_verifier  # Verifier Agent (frozen Qwen2-VL): factory and crop builder
+from dvd.agents.decision import RuleDecisionAgent  # Decision Agent: the accept/reject rule and the optional LLM aggregator
+from dvd.pipeline import DetectVerifyDecide  # cached offline stages and the online Detect-Verify-Decide pipeline
+from dvd.viz import show_detections  # plotting helpers (detections overlay, PR frontier, crop gallery)
 verifier = agg.verifier if RUN_LLM_AGGREGATOR else build_verifier(cfg)   # never load two VLMs on a T4
 pipe = DetectVerifyDecide(build_detector(cfg, coco.cat_names, coco.name_to_cat_id), verifier,
                           RuleDecisionAgent(dvd_best["tau_low"], dvd_best["tau_high"]), cfg)
@@ -608,13 +623,13 @@ NB["06_baseline_woodpecker_style"] = [
            "decides keep/reject for every item in one call. Validation and decision are fused, evidence is global — "
            "the structural opposite of the proposed pipeline.",
            "detection caches", "`results/baselines/woodpecker_*.jsonl`, `results/baselines/woodpecker_*.csv`",
-           "≈2–6 s/image (generation) → held-out ≈30 min, test ≈60 min",
+           "fast profile (batched generation): ≈10 min for 450 images",
            "Objective 3 (isolate the benefit of role separation)"),
     BOOT, INSTALL, CFG, COCO,
     code(r'''
-from dvd.agents.verifier import build_verifier
-from dvd.baselines.woodpecker_style import run_woodpecker_stage, build_prompt
-from dvd.experiments import SplitData, available_methods, sweep, operating_point, evaluate_row
+from dvd.agents.verifier import build_verifier  # Verifier Agent (frozen Qwen2-VL): factory and crop builder
+from dvd.baselines.woodpecker_style import run_woodpecker_stage, build_prompt  # baseline (ii): Woodpecker-style single agent
+from dvd.experiments import SplitData, available_methods, sweep, operating_point, evaluate_row  # methods over identical candidates: sweeps, operating points, evaluation, costs
 H = SplitData(cfg, coco, "heldout", HELDOUT); T = SplitData(cfg, coco, "test", TEST)
 verifier = build_verifier(cfg)
 iid = TEST[0]; im = coco.image(iid); d = T.det[iid]
@@ -645,14 +660,14 @@ NB["07_baseline_vcd"] = [
            "VCD (logits contrasted against a diffusion-noised copy, α=1, β=0.1, noise step 500). A candidate is kept iff the "
            "answer for its label is yes. The same passes also give the plain (non-contrastive) global answer.",
            "detection caches", "`results/baselines/vcd_*.jsonl`, `results/baselines/vcd_*.json`",
-           "2 forward passes per (image, label) → held-out ≈15 min, test ≈30 min",
+           "2 forward passes per (image, label) → fast profile ≈10 min for 450 images",
            "Baseline iii (decoding-time mitigation)"),
     BOOT, INSTALL, CFG, COCO,
     code(r'''
-from dvd.agents.verifier import build_verifier
-from dvd.baselines.vcd import run_vcd_stage, diffusion_noise
-from dvd.cropping import fit_max_side
-from dvd.experiments import SplitData, available_methods, sweep, operating_point, evaluate_row
+from dvd.agents.verifier import build_verifier  # Verifier Agent (frozen Qwen2-VL): factory and crop builder
+from dvd.baselines.vcd import run_vcd_stage, diffusion_noise  # baseline (iii): Visual Contrastive Decoding
+from dvd.cropping import fit_max_side  # crop-and-zoom / image resizing helpers
+from dvd.experiments import SplitData, available_methods, sweep, operating_point, evaluate_row  # methods over identical candidates: sweeps, operating points, evaluation, costs
 H = SplitData(cfg, coco, "heldout", HELDOUT); T = SplitData(cfg, coco, "test", TEST)
 verifier = build_verifier(cfg)
 im = fit_max_side(coco.image(TEST[0]), 448)
@@ -687,37 +702,19 @@ NB["08_main_comparison_coco"] = [
            "≈2–5 min (offline)", "Objectives 2 and 3"),
     BOOT, INSTALL, CFG, COCO,
     code(r'''
-from dvd.experiments import SplitData, available_methods, sweep, operating_point, evaluate_row, method_cost, DET_ONLY, PROPOSED
-from dvd.metrics import decision_breakdown
-from dvd.viz import plot_pr
+from dvd.experiments import SplitData, available_methods, main_comparison, DET_ONLY, PROPOSED  # methods over identical candidates: sweeps, operating points, evaluation, costs
+from dvd.viz import plot_pr  # plotting helpers (detections overlay, PR frontier, crop gallery)
 H = SplitData(cfg, coco, "heldout", HELDOUT); T = SplitData(cfg, coco, "test", TEST)
 MH, MT = available_methods(cfg, H), available_methods(cfg, T)
 print("methods with complete caches:", list(MT))
 '''),
     code(r'''
-sweeps_h = {n: sweep(n, MH[n], H, cfg) for n in MH}
-sweeps_t = {n: sweep(n, MT[n], T, cfg) for n in MT}
-base_h = operating_point(sweeps_h[DET_ONLY]); ref_recall = base_h["recall"]
-tau_ref = base_h["tau"]
-scores_t = {i: T.ev.scores(i) for i in T.ids}
-fp_base = evaluate_row(MT[DET_ONLY], T, base_h)["fp"]
-rows = []
-for crit in ["best_f1", "matched_recall"]:
-    for n in MT:
-        sel = operating_point(sweeps_h[n], crit, ref_recall)
-        r = evaluate_row(MT[n], T, sel, n_boot=1000)
-        b = decision_breakdown(T.labels, scores_t, r.pop("_masks"), tau_ref)
-        rows.append({"criterion": crit, "method": n, **{k: r.get(k) for k in ["tau", "tau_low", "tau_high"]},
-                     "recall_matched": sel.get("recall_matched", None),
-                     "precision": r["precision"], "recall": r["recall"], "f1": r["f1"], "fp": r["fp"], "fp_per_image": r["fp_per_image"],
-                     "fp_reduction": 1 - r["fp"] / fp_base, "f1_ci": r["ci"]["f1"], "precision_ci": r["ci"]["precision"],
-                     "fp_removed_rate": b["fp_removed_rate"], "over_rejection_rate": b["over_rejection_rate"],
-                     **method_cost(MT[n], T, r["n_verified"])})
-main = pd.DataFrame(rows)
-main[main.criterion == "best_f1"][["method", "precision", "recall", "f1", "fp_per_image", "fp_reduction", "over_rejection_rate", "total_latency_s"]]
+# selection on held-out, evaluation on test, bootstrap CIs + paired bootstrap against the detector-only baseline
+main, sweeps_h, sweeps_t, base_h = main_comparison(cfg, H, T, MH, MT, n_boot=1000)
+main[main.criterion == "best_f1"][["method", "precision", "recall", "f1", "fp_per_image", "fp_reduction", "fp_reduction_ci", "over_rejection_rate", "total_latency_s"]]
 '''),
     code(r'''
-main[main.criterion == "matched_recall"][["method", "precision", "recall", "f1", "fp_per_image", "fp_reduction", "over_rejection_rate", "total_latency_s"]]
+main[main.criterion == "matched_recall"][["method", "precision", "recall", "d_recall_ci", "f1", "fp_per_image", "fp_reduction", "fp_reduction_ci", "over_rejection_rate", "total_latency_s"]]
 '''),
     md("## Save the tables"),
     code(r'''
@@ -726,8 +723,9 @@ main.to_csv(tdir / "main_comparison.csv", index=False)
 fmt = main.copy()
 for c in ["precision", "recall", "f1", "fp_reduction", "fp_removed_rate", "over_rejection_rate"]:
     fmt[c] = fmt[c].map(lambda x: f"{x:.3f}")
-fmt["f1_ci"] = fmt["f1_ci"].map(lambda t: f"[{t[0]:.3f}, {t[1]:.3f}]")
-cols = ["criterion", "method", "precision", "recall", "f1", "f1_ci", "fp_per_image", "fp_reduction", "over_rejection_rate", "total_latency_s", "total_invocations"]
+for c in ["f1_ci", "fp_reduction_ci", "d_recall_ci", "d_f1_ci"]:
+    fmt[c] = fmt[c].map(lambda t: f"[{t[0]:.3f}, {t[1]:.3f}]")
+cols = ["criterion", "method", "precision", "recall", "f1", "f1_ci", "fp_per_image", "fp_reduction", "fp_reduction_ci", "d_recall_ci", "over_rejection_rate", "total_latency_s", "total_invocations"]
 (tdir / "main_comparison.md").write_text(fmt[cols].to_markdown(index=False, floatfmt=".3f"), encoding="utf-8")
 print((tdir / "main_comparison.md").read_text())
 '''),
@@ -754,10 +752,10 @@ NB["09_cost_analysis"] = [
            "Quantify the added latency and model invocations of every configuration, validate the cost model against a real "
            "online run of the gated pipeline, and characterise FP reduction per unit of added cost.",
            "all caches", "`results/cost/*.csv`, `results/figures/cost_*.png`",
-           "offline part: seconds; online measurement ≈5 min for 100 images", "Objective 4"),
+           "offline part: seconds; online measurement ≈2 min for 30 images", "Objective 4"),
     BOOT, INSTALL, CFG, COCO,
     code(r'''
-from dvd.experiments import SplitData, available_methods, sweep, operating_point, evaluate_row, method_cost, DET_ONLY, PROPOSED
+from dvd.experiments import SplitData, available_methods, sweep, operating_point, evaluate_row, method_cost, DET_ONLY, PROPOSED  # methods over identical candidates: sweeps, operating points, evaluation, costs
 H = SplitData(cfg, coco, "heldout", HELDOUT); T = SplitData(cfg, coco, "test", TEST)
 MT = available_methods(cfg, T)
 fp_base = evaluate_row(MT[DET_ONLY], T, {"tau": cfg["selected"]["detector_only_tau"]})["fp"]
@@ -788,11 +786,11 @@ m.to_csv(results_dir(cfg, "cost") / "method_costs_test.csv", index=False); m
 '''),
     md("## 3. Validate the cost model with a real online run\nThe deployable pipeline verifies only the uncertain band; its measured latency should match the cost-model estimate."),
     code(r'''
-from dvd.agents.detector import build_detector
-from dvd.agents.verifier import build_verifier
-from dvd.agents.decision import RuleDecisionAgent
-from dvd.pipeline import DetectVerifyDecide
-from tqdm.auto import tqdm
+from dvd.agents.detector import build_detector  # Detector Agent (Grounding DINO): factory
+from dvd.agents.verifier import build_verifier  # Verifier Agent (frozen Qwen2-VL): factory and crop builder
+from dvd.agents.decision import RuleDecisionAgent  # Decision Agent: the accept/reject rule and the optional LLM aggregator
+from dvd.pipeline import DetectVerifyDecide  # cached offline stages and the online Detect-Verify-Decide pipeline
+from tqdm.auto import tqdm  # progress bars
 tl, th = cfg["selected"]["tau_low"], cfg["selected"]["tau_high"]
 pipe = DetectVerifyDecide(build_detector(cfg, coco.cat_names, coco.name_to_cat_id), build_verifier(cfg), RuleDecisionAgent(tl, th), cfg)
 ids = TEST[: cfg["cost"]["online_latency_images"]]
@@ -826,10 +824,10 @@ NB["10_error_analysis"] = [
            "≈5 min", "Expected contribution 4"),
     BOOT, INSTALL, CFG, COCO,
     code(r'''
-from dvd.experiments import SplitData, available_methods, masks_for, PROPOSED
-from dvd.analysis import candidate_table, mean_brightness
-from dvd.viz import crop_gallery
-from tqdm.auto import tqdm
+from dvd.experiments import SplitData, available_methods, masks_for, PROPOSED  # methods over identical candidates: sweeps, operating points, evaluation, costs
+from dvd.analysis import candidate_table, mean_brightness  # per-candidate error-analysis tables and co-occurrence statistics
+from dvd.viz import crop_gallery  # plotting helpers (detections overlay, PR frontier, crop gallery)
+from tqdm.auto import tqdm  # progress bars
 T = SplitData(cfg, coco, "test", TEST)
 M = available_methods(cfg, T)[PROPOSED]
 tl, th = cfg["selected"]["tau_low"], cfg["selected"]["tau_high"]
@@ -843,6 +841,7 @@ print(df.outcome.value_counts())
 '''),
     code(r'''
 def rates(g):
+    # Per group: candidate count, FP/TP counts, share of FPs removed and share of TPs lost.
     fp, tp = g[g.is_fp], g[g.is_tp]
     return pd.Series({"candidates": len(g), "FP": len(fp), "TP": len(tp),
                       "FP removed (correct rejection)": (~fp.accepted).mean() if len(fp) else np.nan,
@@ -869,6 +868,7 @@ plt.tight_layout(); plt.savefig(results_dir(cfg, "figures") / "error_by_category
     md("### Galleries (crops exactly as the verifier saw them)"),
     code(r'''
 def gallery_items(outcome, n=12):
+    # Random sample of candidates with a given outcome, formatted for crop_gallery.
     pool = df[(df.outcome == outcome) & (df.band == "verified band")]
     s = pool.sample(min(n, len(pool)), random_state=0)
     return [{"image_id": r.image_id, "box": r.box, "label": r.label, "score": r.score, "p_yes": r.p_yes} for r in s.itertuples()]
@@ -884,16 +884,16 @@ NB["11_optional_robustness_monitoring"] = [
            "Proxy for surveillance / traffic footage: apply low-light, motion-blur, low-resolution and JPEG degradations to a "
            "test subset (COCO labels stay valid) and compare detector-only vs the pipeline using the thresholds selected on clean "
            "held-out data. A second section runs the online pipeline on a folder of your own images (qualitative).",
-           "COCO test subset, optional image folder", "`results/robustness/*.csv`", "≈15–25 min per condition (200 images)",
+           "COCO test subset, optional image folder", "`results/robustness/*.csv`", "fast profile: ≈2 min per condition (40 images)",
            "Optional extension (proposal §6.1)"),
     BOOT, INSTALL, CFG, COCO,
     code(r'''
-from dvd.degrade import degrade
-from dvd.agents.detector import build_detector
-from dvd.agents.verifier import build_verifier
-from dvd.pipeline import run_detection_stage, run_verification_stage
-from dvd.experiments import SplitData, evaluate_row, cached
-from dvd.metrics import decision_breakdown
+from dvd.degrade import degrade  # synthetic low-light / blur / low-res / JPEG degradations
+from dvd.agents.detector import build_detector  # Detector Agent (Grounding DINO): factory
+from dvd.agents.verifier import build_verifier  # Verifier Agent (frozen Qwen2-VL): factory and crop builder
+from dvd.pipeline import run_detection_stage, run_verification_stage  # cached offline stages and the online Detect-Verify-Decide pipeline
+from dvd.experiments import SplitData, evaluate_row, cached  # methods over identical candidates: sweeps, operating points, evaluation, costs
+from dvd.metrics import decision_breakdown  # matching, metrics, sweeps, AUROC, POPE scores
 SUB = TEST[: cfg["robustness"]["images"]]
 detector = build_detector(cfg, coco.cat_names, coco.name_to_cat_id); verifier = build_verifier(cfg)
 iid = SUB[0]
@@ -924,11 +924,11 @@ rob = pd.DataFrame(rows); rob.to_csv(results_dir(cfg, "robustness") / "degradati
 '''),
     md("## Your own monitoring images (qualitative)\nPut `.jpg/.png` frames in `data/custom_images/` on Drive (no labels needed)."),
     code(r'''
-from pathlib import Path
-from PIL import Image
-from dvd.agents.decision import RuleDecisionAgent
-from dvd.pipeline import DetectVerifyDecide
-from dvd.viz import show_detections
+from pathlib import Path  # portable file paths
+from PIL import Image  # Pillow image type
+from dvd.agents.decision import RuleDecisionAgent  # Decision Agent: the accept/reject rule and the optional LLM aggregator
+from dvd.pipeline import DetectVerifyDecide  # cached offline stages and the online Detect-Verify-Decide pipeline
+from dvd.viz import show_detections  # plotting helpers (detections overlay, PR frontier, crop gallery)
 CUSTOM_DIR = Path(cfg["root"]) / "data" / "custom_images"
 files = sorted([p for p in CUSTOM_DIR.glob("*") if p.suffix.lower() in {".jpg", ".jpeg", ".png"}])[:8] if CUSTOM_DIR.exists() else []
 print(f"{len(files)} custom images found in {CUSTOM_DIR}")
@@ -967,7 +967,7 @@ print("cloudflared ready")
 '''),
     code(r'''
 # 2. start the Streamlit app in the background (log: /content/streamlit.log)
-import time, re
+import time, re  # stopwatch and regular expressions (find the tunnel URL)
 os.environ["DVD_ROOT"] = PROJECT_ROOT
 app_proc = subprocess.Popen(
     ["streamlit", "run", f"{PROJECT_ROOT}/app/streamlit_app.py", "--server.port", "8501", "--server.headless", "true",
@@ -1008,6 +1008,8 @@ for p in (globals().get("tunnel_proc"), globals().get("app_proc")):
 print("stopped")
 '''),
 ]
+
+exec(compile((Path(__file__).parent / "nb_run_all_fast.py").read_text(encoding="utf-8"), "nb_run_all_fast.py", "exec"))
 
 for name, cells in NB.items():
     if ONLY and name not in ONLY:

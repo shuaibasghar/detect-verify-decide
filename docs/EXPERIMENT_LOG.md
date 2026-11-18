@@ -1,6 +1,6 @@
 # Experiment Log
 
-Fill this in from the files in `results/`. **Copy numbers from the CSV/JSON outputs; never type them from memory.**
+Fill this in from the files in `results_fast/` (fast profile, default) or `results/` (`DVD_CONFIG=full`); `results_fast/SUMMARY.md` already collects the headline numbers with their intervals. Paths below say `results/`; substitute the folder you used. **Copy numbers from the CSV/JSON outputs; never type them from memory.**
 Every cell below is empty until the corresponding notebook has run. No results are claimed in advance.
 
 ## Run metadata

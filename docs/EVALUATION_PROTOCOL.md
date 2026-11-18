@@ -3,7 +3,7 @@
 The protocol below is fixed before any results are seen. Everything is implemented in `src/dvd/metrics.py` and `src/dvd/experiments.py`.
 
 ## 1. Splits
-- COCO val2017 is split once, with seed 42, into **held-out** (500 images) and **test** (1000 by default, or all 4500 remaining). The split is stored in `results/splits.json`.
+- COCO val2017 is split once, with seed 42, into **held-out** (tuning only) and **test** (all reported numbers). Sizes: 150 / 300 in the fast profile (default), 500 / 1000 in the full profile. The split is stored in `<results folder>/splits.json` (`results_fast/` or `results/`).
 - **Held-out is used only for selection:** crop margin, τ\* for detector-only, (τ_low, τ_high) for the pipeline, and τ for every baseline.
 - **Test is used only for reporting.** No choice is ever made on test.
 
@@ -26,7 +26,8 @@ Every method's *accepted subset* is re-matched from scratch. If the pipeline rej
 | **FP rate** (as used in this report) | FP / (TP + FP) = 1 − precision, i.e. the false-discovery rate. Detection has no true-negative count, so the classical FPR is undefined. We report this quantity together with FP/image. |
 | **FP reduction** | 1 − FP_method / FP_detector-only(τ\*), on the same test images |
 | 95 % CI | Image-level bootstrap, 1000 resamples (`bootstrap_ci`) |
-| COCO mAP | `pycocotools` on detector-only candidates; a sanity check only (lower bound because of the 0.20 candidate threshold) |
+| Paired comparison | `paired_bootstrap`: both methods are re-evaluated on the *same* resampled images, giving CIs for the FP reduction and the differences in precision, recall and F1, plus the share of resamples in which the first method is better. A claim is called *supported* only if its 95 % CI excludes 0. |
+| COCO mAP | `pycocotools` on detector-only candidates; a sanity check only (lower bound because of the candidate threshold: 0.25 in the fast profile, 0.20 in the full one) |
 
 ## 4. Operating points
 For every method, the configuration is chosen on held-out and applied **unchanged** to test:
@@ -35,8 +36,8 @@ For every method, the configuration is chosen on held-out and applied **unchange
 - **Full frontier:** every configuration is also plotted (PR frontier), so conclusions do not hinge on a single point.
 
 Grids (in `configs/default.yaml`):
-- Detector-only and gate methods: τ ∈ {0.20, 0.25, …, 0.80}.
-- Pipeline: τ_low ∈ {0.20, …, 0.50} × τ_high ∈ {0.30, …, 0.90, 1.01}, with τ_high ≥ τ_low. τ_high = 1.01 means the verifier decides every candidate with c ≥ τ_low.
+- Detector-only and gate methods: τ ∈ {0.20, 0.25, …, 0.80} (full profile); {0.25, …, 0.80} (fast profile, candidate threshold 0.25).
+- Pipeline: τ_low ∈ {0.20 (full) / 0.25 (fast), …, 0.50} × τ_high ∈ {0.30, …, 0.90, 1.01}, with τ_high ≥ τ_low. τ_high = 1.01 means the verifier decides every candidate with c ≥ τ_low.
 
 ## 5. Decision-level breakdown (adapted from Woodpecker)
 The reference pool is the candidates that the detector alone would output at τ_ref. NB05 uses τ_ref = τ_low; NB08 uses τ\* for every method, so all methods share one pool.
@@ -55,7 +56,7 @@ The two headline rates are:
 The over-rejection rate is the price paid in recall, and it is always reported next to any precision gain.
 
 ## 6. Verifier in isolation (POPE)
-- Standard POPE questions for the random, popular and adversarial settings (3000 each, balanced). The answer is `P(yes) > 0.5` on the full image, with the suffix "Answer yes or no."
+- Standard POPE questions for the random, popular and adversarial settings (3000 each, balanced; the fast profile uses the first 300 of each file). The answer is `P(yes) > 0.5` on the full image, with the suffix "Answer yes or no."
 - Reported: accuracy, precision, recall, F1 and **yes-rate**. A yes-rate well above 0.5 indicates over-assertion.
 - The same protocol is run with VCD decoding as the decoding-time reference.
 

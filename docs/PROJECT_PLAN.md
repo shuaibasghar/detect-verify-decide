@@ -4,6 +4,8 @@ This plan breaks the proposal into phases, steps and sub-steps. Each step names 
 
 > **Legend.** `NBxx` = `notebooks/xx_*.ipynb`. `src/dvd/...` = reusable code imported by the notebooks.
 > ☐ = to do. Tick the boxes as you go; this file is the project's progress tracker.
+>
+> **Shortcut for the experiment phases (P3-P5):** `notebooks/run_all_fast.ipynb` runs all of them in one Colab session (fast profile, target ≈2 h, results in `results_fast/`). See [FAST_RUN.md](FAST_RUN.md). The step-by-step notebooks below are the same work split into resumable pieces, and `DVD_CONFIG=full` restores the original protocol.
 
 ---
 

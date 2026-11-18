@@ -1,58 +1,68 @@
-# Detect–Verify–Decide — default experiment configuration.
+# Detect–Verify–Decide — FAST experiment configuration (default): the whole proposal in ~2 h on a Colab T4.
 # Every notebook loads this file through `dvd.config.load_config()`.
 # `${ROOT}` is replaced by the project root (the folder containing this `configs/` dir).
+# The original slow profile (500 held-out / 1000 test images, ~15-20 GPU hours) is configs/full.yaml
+# (select it with the environment variable DVD_CONFIG=full). The two profiles write to different
+# results folders, so they never mix.
 # Values tuned on the held-out split (crop margin, thresholds) are written to
-# results/tuning/selected.json and override the defaults below.
+# <results_root>/tuning/selected.json and override the defaults below.
+#
+# Where the time goes (T4): the Verifier Agent runs on EVERY cached candidate in the offline mode, so its cost is
+#   (#images) x (#candidates per image) x (seconds per crop).
+# The fast profile therefore (1) uses fewer images, (2) keeps at most 20 candidates per image above c >= 0.25,
+# (3) shrinks the zoom size of the crops (336 px instead of 448 px) and the full-image views (448 px instead of 896 px),
+# and (4) batches harder. Nothing is trained and no model is changed; only the sample size and the input resolution.
 
 seed: 42
 
 paths:
   data_root: auto                      # auto -> /content/data on Colab (fast local disk), ${ROOT}/data elsewhere
   download_cache: ${ROOT}/data/downloads   # persistent copy of the dataset zips (lives on Drive on Colab)
-  results_root: ${ROOT}/results        # all caches, tables and figures (persistent)
+  results_root: ${ROOT}/results_fast   # all caches, tables and figures (persistent)
 
 coco:
   split: val2017
-  heldout_size: 500                    # tuning split: crop margin + decision thresholds
-  test_size: 1000                      # evaluation split; null = all remaining 4500 images
+  heldout_size: 150                    # tuning split: crop margin + decision thresholds
+  test_size: 300                       # evaluation split; null = all remaining 4850 images
   iou_threshold: 0.5                   # TP if IoU >= this with an unmatched GT box of the same class
 
 detector:
   backend: grounding_dino              # grounding_dino | yolo_world
   grounding_dino_model: IDEA-Research/grounding-dino-tiny
   yolo_world_model: yolov8s-worldv2.pt
-  box_threshold: 0.20                  # candidate threshold; must be <= the smallest tau_low in the sweep
+  box_threshold: 0.25                  # candidate threshold; must be <= the smallest tau_low in the sweep
   text_threshold: 0.20
   classes_per_prompt: 20               # Grounding DINO text limit -> 80 COCO classes split into 4 prompts
   nms_iou: 0.7                         # class-wise NMS after merging prompts
-  max_detections: 100
+  max_detections: 20                   # keep the 20 most confident candidates per image (bounds verifier cost)
 
 verifier:
   model: Qwen/Qwen2-VL-2B-Instruct     # frozen VLM, <= ~2B params so it fits a T4 next to the detector
   mode: existence                      # existence (POPE-style yes/no) | open (fully label-blind naming)
   view: crop                           # crop (proposed) | full (global-evidence ablation)
-  crop_margin: 0.15                    # box expansion on each side, fraction of box w/h (tuned in NB03)
-  crop_target_size: 448                # longer crop side after upscaling ("zoom")
+  crop_margin: 0.15                    # box expansion on each side, fraction of box w/h (tuned on held-out)
+  crop_target_size: 336                # longer crop side after upscaling ("zoom"); 144 visual tokens per crop
   min_crop_side: 28                    # Qwen2-VL patch-merge size
-  full_image_max_side: 896             # full-image views (POPE, global ablation, baselines)
-  batch_size: 8
+  full_image_max_side: 448             # full-image views (POPE, global ablation, baselines)
+  batch_size: 16
   prompt_existence: "Is there {article} {label} in the image? Answer yes or no."
   prompt_open: "What is the main object in this image? Answer with one or two words."
   open_max_new_tokens: 10
 
 decision:
-  tau_low_grid:  [0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50]
-  tau_high_grid: [0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.70, 0.80, 0.90, 1.01]   # 1.01 = never auto-accept
-  detector_only_grid: [0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.70, 0.80]
+  tau_low_grid:  [0.25, 0.30, 0.35, 0.40, 0.45, 0.50]
+  tau_high_grid: [0.30, 0.35, 0.40, 0.45, 0.50, 0.60, 0.70, 0.80, 0.90, 1.01]   # 1.01 = never auto-accept
+  detector_only_grid: [0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.60, 0.70, 0.80]
   selection: best_f1                   # best_f1 | matched_recall
-  llm_aggregator_images: 100           # optional LLM aggregator is evaluated on this many held-out images
+  llm_aggregator_images: 60            # optional LLM aggregator is evaluated on this many held-out images
 
 margin_tuning:
-  margins: [0.0, 0.10, 0.15, 0.25, 0.40]
-  images: 200                          # held-out images used for the margin search
+  margins: [0.0, 0.15, 0.30]
+  images: 60                           # held-out images used for the margin search
 
 woodpecker:
-  max_candidates: 30                   # top-K candidates listed in the single-agent prompt (rest rejected)
+  max_candidates: 20                   # = detector.max_detections, so no candidate is dropped just for not being listed
+  batch_size: 4                        # images per generation call (timings are per image, amortised over the batch)
 
 vcd:
   alpha: 1.0                           # contrast strength
@@ -62,11 +72,12 @@ vcd:
 pope:
   hf_dataset: lmms-lab/POPE
   settings: [random, popular, adversarial]
-  max_per_setting: null                # null = all 3000 questions per setting; e.g. 500 for a quick run
+  source: github                       # github (question files + only the images needed) | hf (full dataset download)
+  max_per_setting: 300                 # first 300 questions of each setting (balanced yes/no); null = all 3000
 
 robustness:
-  images: 200
+  images: 40
   conditions: [low_light, motion_blur, low_res, jpeg]
 
 cost:
-  online_latency_images: 100           # images used to measure real end-to-end latency in NB09
+  online_latency_images: 30            # images used to measure real end-to-end latency

@@ -1,5 +1,8 @@
 # Running on Google Colab
 
+> **Fastest path:** `notebooks/run_all_fast.ipynb` runs the whole proposal in one session (target ≈2 h on a T4). See [FAST_RUN.md](FAST_RUN.md).
+> The rest of this page covers the step-by-step notebooks 00–12.
+
 ## 1. One-time setup
 
 **Option A — Google Drive (simplest)**
@@ -28,7 +31,7 @@ If you use a different Drive folder, change `DRIVE_PROJECT` in the first code ce
 
 These are planning estimates. Real timings depend on the GPU you are given.
 
-| Notebook | GPU | Approx. time | Can resume? |
+| Notebook (full profile) | GPU | Approx. time | Can resume? |
 |---|---|---|---|
 | 00 smoke test | yes | 10 min | — |
 | 01 data prep | no (CPU fine) | 10 min | yes (download cache) |
@@ -46,12 +49,16 @@ These are planning estimates. Real timings depend on the GPU you are given.
 
 Free-tier sessions last up to ~12 h but disconnect when idle. Long notebooks (03, 06, 11) may need 2–3 sessions. Just re-run them from the top and they continue where they stopped.
 
-## 4. Quick vs full runs
-In `configs/default.yaml`:
-- **Quick pilot:** `coco.test_size: 200`, `pope.max_per_setting: 300`, `margin_tuning.images: 100`.
-- **Full:** `coco.test_size: null` (all 4500 non-held-out images) and `pope.max_per_setting: null`.
+## 4. Fast vs full profile
+`configs/default.yaml` is the **fast profile** (150 held-out / 300 test images, ≤20 candidates per image, 336 px crops, results in `results_fast/`).
+The original protocol is `configs/full.yaml` (500 / 1000 images, results in `results/`). Select it by setting `DVD_CONFIG=full` in the first cell of a notebook, before the config cell:
 
-> `results/splits.json` is created once. If you change `heldout_size` or `test_size` later, delete `results/splits.json` and the caches in `results/` so the splits stay consistent.
+```python
+os.environ["DVD_CONFIG"] = "full"      # default = fast profile
+```
+
+> The split and all caches depend on these values. After changing `heldout_size`, `test_size`, `box_threshold`, `max_detections` or the resolutions, delete the matching results folder (`results_fast/` or `results/`) so nothing stale is reused.
+> The durations in the table of section 3 are for the **full** profile; the fast profile needs roughly a quarter of them (see [FAST_RUN.md](FAST_RUN.md)).
 
 ## 5. Troubleshooting
 

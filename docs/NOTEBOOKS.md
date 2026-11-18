@@ -1,8 +1,19 @@
 # Notebook Reference
 
-All notebooks start with the same three cells:
+### run_all_fast.ipynb (start here)
+- **Goal:** every experiment of the proposal in **one session (≈2 h target on a T4)**, models loaded once.
+- **Does:** setup and data → detector → speed check (measures your GPU and projects the long stages) → crop-margin search → verifier on all candidates (crop view) → global-view ablation → Decision Agent sweep and test evaluation → LLM-aggregator ablation → Woodpecker-style baseline → VCD baseline → POPE → main comparison with paired-bootstrap CIs → cost and online latency → error analysis → monitoring conditions → `SUMMARY.md`.
+- **Writes:** everything under `results_fast/` (Drive copy refreshed after every step; resumable).
+- **Details and the claim-to-evidence map:** [FAST_RUN.md](FAST_RUN.md). The cells are written in `tools/nb_run_all_fast.py`.
 
-- **Bootstrap**: mounts Drive, finds the project, adds `src/` to the path.
+The numbered notebooks below are the same experiments split into separate, individually resumable steps. They use the same
+`configs/default.yaml` (fast profile) unless `DVD_CONFIG=full` is set.
+
+---
+
+All numbered notebooks start with the same three cells:
+
+- **Bootstrap**: mounts Drive, finds the project, fetches the latest `src/` and `configs/` from GitHub (if the Drive copy is a git clone), adds `src/` to the path.
 - **Install**: installs `requirements.txt`.
 - **Config**: loads `configs/default.yaml` and `results/tuning/selected.json`.
 
@@ -27,7 +38,8 @@ Notebooks that use COCO add a fourth cell that loads the COCO data and the froze
   - computes category and split statistics;
   - inspects all three POPE settings;
   - computes the top-10 co-occurrence partners of each class.
-- **Writes:** `results/splits.json`, `results/data/category_counts.csv`, `pope_stats.csv`, `cooccurrence_top10.json`.
+- **Writes:** `splits.json`, `data/category_counts.csv`, `pope_stats.csv`, `cooccurrence_top10.json` (under `results_fast/`, or `results/` with `DVD_CONFIG=full`).
+- **Download:** the annotation file and only the images of the two splits (not the 778 MB zip).
 
 ### 02_detector_agent_baseline.ipynb — baseline (i)
 - **Goal:** cache the detector candidates and evaluate the single-pass detector.

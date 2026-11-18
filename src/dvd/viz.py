@@ -1,22 +1,31 @@
 """Plotting helpers: detections overlay, precision-recall frontier, crop galleries, cost curves."""
+# Postpone evaluation of type hints (compatibility with older Python versions).
 from __future__ import annotations
 
+# matplotlib.pyplot: figures and axes.
 import matplotlib.pyplot as plt
+# matplotlib.patches: Rectangle outlines for bounding boxes.
 import matplotlib.patches as patches
 
+# crop_and_zoom: show crops exactly as the verifier saw them.
 from .cropping import crop_and_zoom
 
+# Box colour per decision status: green = accepted, red = rejected, yellow = being verified, blue = no status.
 STATUS_COLORS = {"accepted": "#2e7d32", "rejected": "#c62828", "verified": "#f9a825", None: "#1565c0"}
 
 
 def show_detections(image, boxes, labels, scores, status=None, ax=None, title=None):
+    """Draw the image with one labelled box per candidate; rejected boxes are dashed."""
+    # Create a figure if the caller did not pass an axes.
     ax = ax or plt.subplots(figsize=(8, 6))[1]
     ax.imshow(image)
     for k, (b, l, s) in enumerate(zip(boxes, labels, scores)):
         st = status[k] if status is not None else None
         col = STATUS_COLORS.get(st, "#1565c0")
+        # Box outline (xyxy -> x, y, width, height for Rectangle).
         ax.add_patch(patches.Rectangle((b[0], b[1]), b[2] - b[0], b[3] - b[1], fill=False, lw=2, ec=col,
                                        ls="-" if st != "rejected" else "--"))
+        # Label and confidence just above the box.
         ax.text(b[0], b[1] - 2, f"{l} {s:.2f}", color="white", fontsize=8, bbox=dict(fc=col, ec="none", pad=1))
     ax.set_axis_off()
     if title:
@@ -28,7 +37,9 @@ def plot_pr(rows_by_method: dict, ax=None, highlight: dict | None = None, title=
     """rows_by_method: {name: [sweep rows]}. Draws each method's Pareto frontier plus its points."""
     ax = ax or plt.subplots(figsize=(7, 5))[1]
     for name, rows in rows_by_method.items():
+        # All distinct (recall, precision) points of this method.
         pts = sorted({(r["recall"], r["precision"]) for r in rows})
+        # Pareto frontier: walk from high recall to low recall and keep points with a new best precision.
         front, best = [], -1.0
         for rc, pr in sorted(pts, key=lambda x: -x[0]):
             if pr > best:
@@ -36,7 +47,9 @@ def plot_pr(rows_by_method: dict, ax=None, highlight: dict | None = None, title=
                 best = pr
         front.sort()
         line, = ax.plot([p[0] for p in front], [p[1] for p in front], "-o", ms=3, label=name)
+        # Faint dots show every evaluated configuration.
         ax.scatter([p[0] for p in pts], [p[1] for p in pts], s=6, alpha=0.25, color=line.get_color())
+    # Stars mark the operating points that were selected on the held-out split.
     for name, r in (highlight or {}).items():
         ax.scatter([r["recall"]], [r["precision"]], marker="*", s=180, edgecolor="k", zorder=5, label=f"{name} (selected)")
     ax.set_xlabel("Recall")
@@ -53,11 +66,14 @@ def crop_gallery(items, image_fn, margin=0.15, ncols=6, title=None, size=448):
     if n == 0:
         print("no items")
         return None
+    # Grid layout: `ncols` crops per row.
     nrows = (n + ncols - 1) // ncols
     fig, axes = plt.subplots(nrows, ncols, figsize=(2.6 * ncols, 2.9 * nrows), squeeze=False)
+    # Hide all cells first so unused ones stay blank.
     for ax in axes.ravel():
         ax.set_axis_off()
     for ax, it in zip(axes.ravel(), items):
+        # The same crop-and-zoom the verifier receives.
         ax.imshow(crop_and_zoom(image_fn(it["image_id"]), it["box"], margin, size))
         extra = f" p={it['p_yes']:.2f}" if it.get("p_yes") is not None else ""
         ax.set_title(f"{it['label']} c={it['score']:.2f}{extra}", fontsize=8)
@@ -68,6 +84,7 @@ def crop_gallery(items, image_fn, margin=0.15, ncols=6, title=None, size=448):
 
 
 def plot_cost(rows: list[dict], x="total_latency_s", y="fp_removed", label_key="name", ax=None):
+    """Scatter of cost (x) versus benefit (y), one labelled point per row."""
     ax = ax or plt.subplots(figsize=(7, 5))[1]
     for r in rows:
         ax.scatter(r[x], r[y], s=40)

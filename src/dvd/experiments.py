@@ -6,17 +6,25 @@ Every method is expressed over the SAME detector candidates of a split:
   kind="gate" : verdict alone decides,               accept = (c >= tau) and v
 so differences between methods come only from how candidates are verified and decided.
 """
+# Postpone evaluation of type hints (compatibility with older Python versions).
 from __future__ import annotations
 
+# numpy: verdict arrays and averages.
 import numpy as np
 
+# Cache-file name helpers (they encode backend, VLM, view, margin ...).
 from . import paths
+# Map per-label VCD answers back onto candidates.
 from .baselines.vcd import candidate_verdicts
+# Latency helpers of the cost model.
 from .cost import detector_cost, per_call_seconds
+# Resumable JSONL cache reader.
 from .io_utils import JsonlCache
+# Evaluator, decision masks, operating-point selection and threshold sweeps.
 from .metrics import (DetectionEvaluator, rule_masks, select_at_recall, select_best, sweep_detector_only,
                       sweep_gate, sweep_rule)
 
+# Display names of the main method and the baseline; used as dictionary keys and in tables.
 PROPOSED = "DVD: crop verifier + rule (proposed)"
 DET_ONLY = "Detector only"
 
@@ -30,6 +38,7 @@ def cached(path, ids) -> dict | None:
 
 
 def require(path, ids) -> dict:
+    """Like `cached`, but raises a helpful error saying which stage still has to be run."""
     recs = cached(path, ids)
     if recs is None:
         n = len(JsonlCache(path)) if path.exists() else 0
@@ -42,8 +51,10 @@ class SplitData:
 
     def __init__(self, cfg: dict, coco, split: str, ids: list[int], det_tag: str = "", image_fn=None):
         self.cfg, self.split, self.ids = cfg, split, ids
+        # Cached detector output (must be complete for all `ids`).
         self.det = require(paths.det_cache(cfg, split, det_tag), ids)
         self.gts = coco.gts(ids)
+        # Evaluator with precomputed IoU matrices, and the TP/FP/IGNORE label of every candidate.
         self.ev = DetectionEvaluator(self.det, self.gts, cfg["coco"]["iou_threshold"])
         self.labels = self.ev.candidate_labels()
 
@@ -51,21 +62,26 @@ class SplitData:
 def available_methods(cfg: dict, data: SplitData) -> dict:
     """All methods whose caches are complete for this split."""
     s, ids = data.split, data.ids
+    # The detector-only baseline needs no cache beyond the detections.
     m = {DET_ONLY: {"kind": "none"}}
     crop = cached(paths.ver_cache(cfg, s, "crop"), ids)
     if crop:
+        # Boolean verdicts and P(yes) per candidate, and the measured seconds per verifier call.
         v = {i: np.asarray(r["verdict"], bool) for i, r in crop.items()}
         p = {i: np.asarray(r["p_yes"], np.float32) for i, r in crop.items()}
         t = per_call_seconds(crop, "verify_time_s", "verify_invocations")
         m[PROPOSED] = {"kind": "rule", "verdicts": v, "p_yes": p, "t_call": t}
+        # Same verdicts, different decision structure: the verifier alone decides (no confidence fusion).
         m["Ablation: crop verifier decides alone"] = {"kind": "gate", "verdicts": v, "p_yes": p, "t_call": t}
     full = cached(paths.ver_cache(cfg, s, "full"), ids)
     if full:
+        # Ablation: same rule, but the verifier sees the whole image instead of the crop.
         m["Ablation: global-view verifier + rule"] = {
             "kind": "rule", "verdicts": {i: np.asarray(r["verdict"], bool) for i, r in full.items()},
             "t_call": per_call_seconds(full, "verify_time_s", "verify_invocations")}
     wp = cached(paths.woodpecker_cache(cfg, s), ids)
     if wp:
+        # Baseline (ii): cost is a fixed per-image time (one generation call per image).
         m["Woodpecker-style single agent"] = {
             "kind": "gate", "verdicts": {i: np.asarray(r["verdict"], bool) for i, r in wp.items()},
             "fixed_time": float(np.mean([r["time_s"] for r in wp.values()])),
@@ -74,14 +90,17 @@ def available_methods(cfg: dict, data: SplitData) -> dict:
     if vcd:
         ft = float(np.mean([r["time_s"] for r in vcd.values()]))
         fc = float(np.mean([r["invocations"] for r in vcd.values()]))
+        # Baseline (iii): VCD answers per label, mapped back to candidates.
         m["VCD global yes/no"] = {"kind": "gate", "verdicts": candidate_verdicts(data.det, vcd, "p_vcd"),
                                   "fixed_time": ft, "fixed_calls": fc}
+        # Same passes without the contrast: half the cost (only the clean-image pass is needed).
         m["Plain global yes/no (no contrast)"] = {"kind": "gate", "verdicts": candidate_verdicts(data.det, vcd, "p_plain"),
                                                  "fixed_time": ft / 2, "fixed_calls": fc / 2}
     return m
 
 
 def sweep(name: str, method: dict, data: SplitData, cfg: dict) -> list[dict]:
+    """Evaluate a method over its threshold grid; one row per configuration."""
     d = cfg["decision"]
     if method["kind"] == "none":
         rows = sweep_detector_only(data.ev, d["detector_only_grid"])
@@ -95,6 +114,7 @@ def sweep(name: str, method: dict, data: SplitData, cfg: dict) -> list[dict]:
 
 
 def masks_for(method: dict, data: SplitData, row: dict) -> dict:
+    """Accept masks of one configuration (a row of a sweep) for every image of `data`."""
     ev = data.ev
     if method["kind"] == "none":
         return {i: ev.scores(i) >= row["tau"] for i in ev.ids}
@@ -113,6 +133,7 @@ def operating_point(rows: list[dict], criterion: str = "best_f1", ref_recall: fl
 
 
 def config_of(row: dict) -> dict:
+    """Only the threshold fields (tau / tau_low / tau_high) of a sweep row."""
     return {k: row[k] for k in ("tau", "tau_low", "tau_high") if k in row}
 
 
@@ -124,18 +145,96 @@ def evaluate_row(method: dict, data: SplitData, row: dict, n_boot: int = 0) -> d
     out.update(config_of(row))
     out["n_verified"] = _n_verified(method, data, row)
     if n_boot:
+        # Replace the per-image counts by bootstrap confidence intervals.
         out["ci"] = bootstrap_ci(out.pop("_per_image"), n_boot)
+    # Keep the masks: the decision breakdown and the paired bootstrap need them.
     out["_masks"] = masks
     return out
 
 
+def per_image_counts(method: dict, data: SplitData, row: dict) -> dict:
+    """Per-image tp / fp / n_gt arrays of a configuration (input of the bootstrap functions)."""
+    return data.ev.evaluate(masks_for(method, data, row), per_image=True)["_per_image"]
+
+
+def main_comparison(cfg: dict, H: SplitData, T: SplitData, MH: dict, MT: dict, n_boot: int = 1000):
+    """The main results table: every method with complete caches, operating point selected on held-out
+    (best-F1 and matched-recall), evaluated unchanged on test, with bootstrap CIs and a PAIRED bootstrap of every
+    method against the detector-only baseline (FP reduction, recall / precision / F1 differences).
+    Returns (table, sweeps_held_out, sweeps_test, detector_only_operating_point)."""
+    # pandas only needed here, so the rest of the module stays importable without it.
+    import pandas as pd
+    from .metrics import decision_breakdown, paired_bootstrap
+
+    # Methods available on BOTH splits.
+    names = [n for n in MT if n in MH]
+    # Held-out sweeps select the configuration; test sweeps draw the PR frontier figure.
+    sweeps_h = {n: sweep(n, MH[n], H, cfg) for n in names}
+    sweeps_t = {n: sweep(n, MT[n], T, cfg) for n in names}
+    # Reference: the detector-only best-F1 point (its recall is the "matched recall" target).
+    base_h = operating_point(sweeps_h[DET_ONLY])
+    ref_recall, tau_ref = base_h["recall"], base_h["tau"]
+    scores_t = {i: T.ev.scores(i) for i in T.ids}
+    # Per-image counts of the baseline on test, used by every paired bootstrap below.
+    base_pi = per_image_counts(MT[DET_ONLY], T, base_h)
+    fp_base = int(base_pi["fp"].sum())
+    rows = []
+    for crit in ["best_f1", "matched_recall"]:
+        for n in names:
+            # Configuration chosen on held-out, applied unchanged to test.
+            sel = operating_point(sweeps_h[n], crit, ref_recall)
+            r = evaluate_row(MT[n], T, sel, n_boot=n_boot)
+            masks = r.pop("_masks")
+            b = decision_breakdown(T.labels, scores_t, masks, tau_ref)
+            pb = paired_bootstrap(base_pi, T.ev.evaluate(masks, per_image=True)["_per_image"], n_boot)
+            rows.append({
+                "criterion": crit, "method": n, **{k: r.get(k) for k in ["tau", "tau_low", "tau_high"]},
+                "recall_matched": sel.get("recall_matched", None),
+                "precision": r["precision"], "recall": r["recall"], "f1": r["f1"], "fp": r["fp"],
+                "fp_per_image": r["fp_per_image"], "fp_reduction": 1 - r["fp"] / fp_base if fp_base else float("nan"),
+                "f1_ci": r["ci"]["f1"], "precision_ci": r["ci"]["precision"], "recall_ci": r["ci"]["recall"],
+                "fp_reduction_ci": pb["fp_reduction"]["ci"], "d_recall": pb["d_recall"]["point"],
+                "d_recall_ci": pb["d_recall"]["ci"], "d_f1": pb["d_f1"]["point"], "d_f1_ci": pb["d_f1"]["ci"],
+                "p_fp_reduction_gt0": pb["fp_reduction"]["p_gt0"], "p_f1_gt0": pb["d_f1"]["p_gt0"],
+                "fp_removed_rate": b["fp_removed_rate"], "over_rejection_rate": b["over_rejection_rate"],
+                **method_cost(MT[n], T, r["n_verified"])})
+    return pd.DataFrame(rows), sweeps_h, sweeps_t, base_h
+
+
+def paired_vs_proposed(cfg: dict, T: SplitData, MT: dict, sweeps_h: dict, base_h: dict, criterion: str = "best_f1",
+                       n_boot: int = 1000):
+    """Paired bootstrap of the PROPOSED pipeline against every other method (each at its own held-out-selected
+    operating point). Positive d_f1 / fp_reduction = the proposed pipeline is better than that method."""
+    import pandas as pd
+    from .metrics import paired_bootstrap
+
+    # Operating point of every method, chosen on held-out with the same criterion.
+    sel = {n: operating_point(sweeps_h[n], criterion, base_h["recall"]) for n in sweeps_h if n in MT}
+    # Per-image counts of every method on test.
+    pi = {n: per_image_counts(MT[n], T, sel[n]) for n in sel}
+    rows = []
+    for n in sel:
+        if n == PROPOSED:
+            continue
+        # base = the other method, method = the proposed pipeline -> positive numbers favour the pipeline.
+        pb = paired_bootstrap(pi[n], pi[PROPOSED], n_boot)
+        rows.append({"criterion": criterion, "versus": n, "fp_reduction": pb["fp_reduction"]["point"],
+                     "fp_reduction_ci": pb["fp_reduction"]["ci"], "d_precision": pb["d_precision"]["point"],
+                     "d_recall": pb["d_recall"]["point"], "d_recall_ci": pb["d_recall"]["ci"],
+                     "d_f1": pb["d_f1"]["point"], "d_f1_ci": pb["d_f1"]["ci"], "p_f1_gt0": pb["d_f1"]["p_gt0"]})
+    return pd.DataFrame(rows)
+
+
 def _n_verified(method: dict, data: SplitData, row: dict) -> float:
+    """Average number of candidates per image that this configuration sends to the verifier."""
     ev = data.ev
     if method["kind"] == "none":
         return 0.0
     if method["kind"] == "rule":
+        # Only the uncertain band is verified.
         return float(np.mean([((ev.scores(i) >= row["tau_low"]) & (ev.scores(i) < row["tau_high"])).sum()
                               for i in ev.ids]))
+    # Gate methods verify every candidate above tau.
     return float(np.mean([(ev.scores(i) >= row["tau"]).sum() for i in ev.ids]))
 
 
@@ -143,8 +242,10 @@ def method_cost(method: dict, data: SplitData, n_verified: float) -> dict:
     """Per-image latency + invocations of a configuration (cost model, see docs/EVALUATION_PROTOCOL.md)."""
     d = detector_cost(data.det)
     if "t_call" in method:
+        # Per-candidate verifier: added latency = calls x measured seconds per call.
         added, calls = n_verified * method["t_call"], n_verified
     elif "fixed_time" in method:
+        # Baselines with a fixed per-image cost (Woodpecker-style, VCD).
         added, calls = method["fixed_time"], method["fixed_calls"]
     else:
         added, calls = 0.0, 0.0
