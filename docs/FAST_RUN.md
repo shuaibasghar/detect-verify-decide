@@ -40,6 +40,7 @@ needed ≈10 h for the verifier alone. The fast profile (`configs/default.yaml`)
 | COCO download | 778 MB zip | **annotation file + 450 images** | |
 | robustness / online latency | 200 / 100 images | **40 / 30** | |
 | LLM aggregator | 100 held-out images | **60** | |
+| extended test (section 8b, detector vs proposed only) | - | **+700 test-only images** (`coco.test_ext_size`) | tightens the main claim; never used for tuning |
 | results folder | `results/` | **`results_fast/`** (profiles never mix) | |
 
 Nothing is trained and no model is changed in either profile. What the smaller setup cannot do is establish **small** differences:
@@ -57,6 +58,15 @@ the summary marks a claim as *supported* only if its 95 % interval excludes zero
 | Where verification helps or hurts (contribution 4) | `error_analysis/by_*.csv`, `figures/gallery_*.png`, `pipeline/decision_breakdown_test.csv` |
 | Monitoring conditions (§6.1 extension) | `robustness/degradations.csv` |
 | Margin choice, verifier separability | `verifier/margin_tuning.csv`, `figures/margin_search.png`, `figures/pyes_hist_test.png`, `verifier/verifier_diagnostics_test.csv` |
+
+## Re-running after the baseline fix and the extended test (do NOT start from scratch)
+
+Changes since the first full run: the Woodpecker-style baseline now uses strict-JSON answers with a per-item fallback (new cache `woodpecker_v2_*`; the old file is left alone and ignored), a new section 8b runs detector-only vs the proposed pipeline on 700 extra test images, and the summary wording is stricter. The held-out/test ids, the tuned values (crop margin, tau_low/tau_high) and all other caches (detector, crop verifier, global view, VCD, POPE, margin search) are unchanged and reused.
+
+1. Push the code. On **Kaggle**: *Add Input -> Notebook output* and choose the previous version, so `results_fast/` is restored; then *Save Version -> Save & Run All*. On **Colab**: re-run top to bottom (results come back from Drive).
+2. Re-run top to bottom; cached stages skip. New work is only: Woodpecker v2 (~25 min, section 5), extended test (~75 min for 700 images, section 8b; the notebook prints its own estimate first) and the quick summary cells.
+3. Check section 5: first-pass parse rate should be >= 0.9 (a loud warning is printed otherwise) and the keep rate should not be ~100 %.
+4. If you do not want the extended test, set `coco.test_ext_size: 0` (section 8b is skipped). Changing it later is safe: `splits.json` only ever gains a `test_ext` key.
 
 ## If it is still too slow, or you want more
 

@@ -17,8 +17,9 @@ Colab session of about 2 hours** (T4). Run all cells top to bottom (*Runtime →
 | 2 | crop-margin search (3 margins × 60 held-out images) | ≈ 5 min |
 | 3 | Verifier Agent on all candidates, crop view | ≈ 10–15 min |
 | 4 | global-view ablation, Decision Agent sweep, LLM aggregator | ≈ 10 min |
-| 5–7 | Woodpecker-style baseline, VCD baseline, POPE | ≈ 25 min |
+| 5–7 | Woodpecker-style baseline (v2: JSON answers), VCD baseline, POPE | ≈ 25 min |
 | 8–11 | comparison table with paired CIs, cost + online run, error analysis, robustness | ≈ 15 min |
+| 8b | extended test (700 extra images, detector vs proposed only; skipped if `coco.test_ext_size: 0`) | ≈ 75 min |
 
 Cell 7 **measures** the real speed on your GPU and prints a projection, so you know the total before the long stages start.
 
@@ -138,11 +139,14 @@ with stage("0 data"):
     coco = CocoData(cfg)
     splits = make_splits(cfg, coco.image_ids)                 # seeded, created once, frozen in results_fast/splits.json
     HELDOUT, TEST = splits["heldout"], splits["test"]
+    TEST_EXT = splits.get("test_ext", [])                     # extra test-only images (section 8b); [] when coco.test_ext_size is 0
     assert len(HELDOUT) == cfg["coco"]["heldout_size"] and len(TEST) == (cfg["coco"]["test_size"] or len(TEST)), \
         "results_fast/splits.json was created with other sizes - delete results_fast/ on Drive and re-run"
     assert not set(HELDOUT) & set(TEST)
+    assert len(TEST_EXT) == int(cfg["coco"].get("test_ext_size", 0) or 0) and not set(TEST_EXT) & (set(HELDOUT) | set(TEST)), \
+        "splits.json: test_ext has another size than coco.test_ext_size, or overlaps held-out/test"
     fetch_images(cfg, HELDOUT + TEST)
-print(f"held-out (tuning only): {len(HELDOUT)} images | test (all reported numbers): {len(TEST)} images")
+print(f"held-out (tuning only): {len(HELDOUT)} images | test (all reported numbers): {len(TEST)} images | test_ext (8b only): {len(TEST_EXT)} images")
 '''),
     code(r'''
 # ---- both frozen models, loaded once for the whole session ---------------------------------------------------------------
@@ -152,7 +156,7 @@ from dvd.pipeline import run_detection_stage, run_verification_stage, verify_glo
 from dvd.agents.decision import RuleDecisionAgent  # Decision Agent: the accept/reject rule and the optional LLM aggregator
 from dvd.cost import Timer  # latency timer and cost model
 from dvd.experiments import (SplitData, available_methods, sweep, operating_point, evaluate_row, method_cost,  # methods over identical candidates: sweeps, operating points, evaluation, costs
-                             main_comparison, paired_vs_proposed, DET_ONLY, PROPOSED)
+                             main_comparison, paired_vs_proposed, extended_comparison, DET_ONLY, PROPOSED)
 from dvd.metrics import auroc, TP, FP, DetectionEvaluator, decision_breakdown  # matching, metrics, sweeps, AUROC, POPE scores
 with stage("load models"):
     detector = build_detector(cfg, coco.cat_names, coco.name_to_cat_id)     # Grounding DINO-T
@@ -297,12 +301,20 @@ llm_df[["decision", "precision", "recall", "f1", "fp", "tp"]]
 '''),
     md("## 5 · Baseline ii — Woodpecker-style single agent\nThe same VLM sees the **full image** plus the numbered candidate list and decides keep/reject for every item in one call: validation and decision are fused, evidence is global. (A re-implementation with the same models, not the official GPT-3.5/BLIP-2 code — see `docs/DATASETS_AND_BASELINES.md`.)"),
     code(r'''
-from dvd.baselines.woodpecker_style import run_woodpecker_stage  # baseline (ii): Woodpecker-style single agent
-with stage("5 Woodpecker-style baseline"):
+from dvd.baselines.woodpecker_style import run_woodpecker_stage, parse_summary  # baseline (ii): Woodpecker-style single agent (v2: strict JSON answer, per-item fallback)
+with stage("5 Woodpecker-style baseline (v2)"):
     wp_h = run_woodpecker_stage(verifier, H.det, HELDOUT, paths.woodpecker_cache(cfg, "heldout"), cfg, coco.image, "woodpecker held-out")
     wp_t = run_woodpecker_stage(verifier, T.det, TEST, paths.woodpecker_cache(cfg, "test"), cfg, coco.image, "woodpecker test")
-print("answer parse rate (test):", round(float(np.mean([r["parse_ok"] for r in wp_t.values()])), 3))
-print("example raw answer:", repr(next(r["raw"] for r in wp_t.values() if r["raw"])[:120]))
+WP_PARSE = {"held-out": parse_summary(wp_h), "test": parse_summary(wp_t)}
+for split_name, ps in WP_PARSE.items():
+    print(f"{split_name}: parse rate first pass {ps['parse_rate_first_pass']:.3f} | after per-item fallback {ps['parse_rate_final']:.3f} | "
+          f"items re-asked individually {ps['n_fallback_items']} of {ps['n_listed_items']} | keep rate {ps['keep_rate']:.3f}")
+    if ps["parse_rate_first_pass"] < 0.9:
+        print("!" * 100, f"\nWARNING ({split_name}): only {ps['parse_rate_first_pass']:.0%} of the answers were parsable in the first pass; the baseline leans on the per-item fallback.\n" + "!" * 100)
+    if ps["keep_rate"] > 0.95:
+        print(f"WARNING ({split_name}): the VLM keeps {ps['keep_rate']:.0%} of the candidates - the answer is nearly degenerate (always 'keep').")
+for r in [r for r in wp_t.values() if r["raw"]][:3]:
+    print("example raw answer:", repr(r["raw"][:160]))
 '''),
     md("## 6 · Baseline iii — Visual Contrastive Decoding (VCD)\nFor every (image, candidate label) the VLM is asked on the full image, contrasting its logits with those from a diffusion-noised copy (α = 1, β = 0.1, noise step 500). The same passes give the plain (non-contrastive) global answer."),
     code(r'''
@@ -313,15 +325,27 @@ with stage("6 VCD baseline"):
 '''),
     md("## 7 · The Verifier Agent in isolation on POPE\nPOPE (random / popular / adversarial; 50 % yes). Plain yes/no and VCD yes/no on the first 300 questions of each setting. Reported: accuracy, precision, recall, F1 and the yes-rate (over-assertion)."),
     code(r'''
-from dvd.data.pope import iter_pope  # POPE benchmark loader
+from dvd.data.pope import iter_pope, overlap_report  # POPE benchmark loader and question-set overlap check
 from dvd.metrics import pope_metrics  # matching, metrics, sweeps, AUROC, POPE scores
 from dvd.cropping import fit_max_side  # crop-and-zoom / image resizing helpers
 from tqdm.auto import tqdm  # progress bars
 SIDE, MAX_N = cfg["verifier"]["full_image_max_side"], cfg["pope"]["max_per_setting"]
 
+# Check first: are the questions of different settings really different? (Only the small question files are read here.)
+POPE_SAMPLE = {s: "head" for s in cfg["pope"]["settings"]}           # "head" = first MAX_N questions of the file (original behaviour)
+try:
+    rep = overlap_report(cfg, cfg["pope"]["settings"], MAX_N)
+    print("POPE question-set overlap (fraction of identical (image, question) pairs):"); display(pd.DataFrame(rep))
+    for r in rep:   # a setting that repeats an earlier setting's questions gets its own seeded, yes/no-balanced sample (own cache file)
+        if r["identical_fraction"] >= 0.99 and POPE_SAMPLE[r["b"]] == "head":
+            POPE_SAMPLE[r["b"]] = "balanced_seeded"
+            print(f"-> '{r['b']}' used the same questions as '{r['a']}': it now uses its own seeded balanced sample (new cache file, other caches untouched)")
+except Exception as e:  # noqa: BLE001 - no network for the question files etc.: keep the original behaviour
+    print("[pope] overlap check skipped:", type(e).__name__, e)
+
 def run_pope(setting, method):
     # Run (or resume) one POPE setting with plain or VCD yes/no and return its metrics.
-    cache = JsonlCache(paths.pope_cache(cfg, setting, method), key="idx"); batch = []
+    cache = JsonlCache(paths.pope_cache(cfg, setting, method, POPE_SAMPLE[setting]), key="idx"); batch = []
     def flush():
         # Score the collected batch, write one cache line per question, and empty the batch.
         imgs = [fit_max_side(b["image"], SIDE) for b in batch]; qs = [b["question"].strip() + " Answer yes or no." for b in batch]
@@ -330,7 +354,7 @@ def run_pope(setting, method):
         for b, pi in zip(batch, pp):
             cache.add({"idx": b["idx"], "question": b["question"], "label": b["label"], "p_yes": float(pi), "pred": "yes" if pi > .5 else "no", "time_s": t.elapsed / len(batch)})
         batch.clear()
-    for item in tqdm(iter_pope(cfg, setting, MAX_N), desc=f"POPE {setting} [{method}]", total=MAX_N or 3000):
+    for item in tqdm(iter_pope(cfg, setting, MAX_N, POPE_SAMPLE[setting]), desc=f"POPE {setting} [{method}]", total=MAX_N or 3000):
         if item["idx"] in cache: continue
         batch.append(item)
         if len(batch) == 8: flush()
@@ -341,6 +365,14 @@ def run_pope(setting, method):
 with stage("7 POPE"):
     pope_df = pd.DataFrame([run_pope(s, m) for s in cfg["pope"]["settings"] for m in ("plain", "vcd")])
 pope_df.to_csv(results_dir(cfg, "pope") / "pope_results.csv", index=False)
+# Sanity check: how often do two settings give the identical prediction for the same question position?
+def _pope_preds(s, m="plain"): return {k: (r["question"], r["pred"]) for k, r in JsonlCache(paths.pope_cache(cfg, s, m, POPE_SAMPLE[s]), key="idx").records().items()}
+_pp = {s: _pope_preds(s) for s in cfg["pope"]["settings"]}
+for _i, _a in enumerate(cfg["pope"]["settings"]):
+    for _b in cfg["pope"]["settings"][_i + 1:]:
+        _k = [k for k in _pp[_a] if k in _pp[_b]]
+        print(f"POPE plain, {_a} vs {_b}: identical question text at {np.mean([_pp[_a][k][0] == _pp[_b][k][0] for k in _k]):.1%} of positions, "
+              f"identical prediction at {np.mean([_pp[_a][k][1] == _pp[_b][k][1] for k in _k]):.1%} (sample: {POPE_SAMPLE[_a]} / {POPE_SAMPLE[_b]})")
 pope_df[["setting", "method", "n", "accuracy", "precision", "recall", "f1", "yes_rate", "s_per_question"]]
 '''),
     md("## 8 · Main comparison on COCO (all methods, identical models and candidates)\nOperating point of every method is selected on held-out (best-F1, and matched-recall = fewest FPs at the detector's recall), then evaluated unchanged on test. Intervals are image-level bootstrap; the *paired* bootstrap tests every method against the detector-only baseline and the proposed pipeline against every other method on the same resampled images."),
@@ -360,10 +392,45 @@ print("=== operating point: best F1 (selected on held-out, applied to test) ==="
 print("=== operating point: matched recall (fewest FPs at the detector's recall) ==="); display(main[main.criterion == "matched_recall"][cols])
 '''),
     code(r'''
+def verdict(ci, point):
+    # Plain-language verdict from a 95 % interval: supported / opposite direction / not established.
+    return "supported (95% CI excludes 0)" if ci[0] > 0 else ("opposite direction (CI below 0)" if ci[1] < 0 else "not established at this sample size (CI includes 0)")
+f2 = lambda t: f"[{t[0]:+.3f}, {t[1]:+.3f}]"
 sel = {n: main[(main.criterion == "best_f1") & (main.method == n)].iloc[0] for n in MT}
 fig, ax = plt.subplots(figsize=(8, 6)); plot_pr(sweeps_t, ax=ax, highlight={n: sel[n] for n in (DET_ONLY, PROPOSED)}, title="All methods, test split")
 plt.savefig(results_dir(cfg, "figures") / "pr_frontier_all_methods_test.png", dpi=130, bbox_inches="tight"); plt.show()
 print("=== proposed pipeline vs each method (paired; + = proposed is better) ==="); display(vs[["criterion", "versus", "d_f1", "d_f1_ci", "fp_reduction", "fp_reduction_ci", "d_recall", "p_f1_gt0"]])
+'''),
+    md("## 8b · Extended test (detector vs proposed only)\n"
+       "With 300 test images the FP-reduction interval at matched recall includes 0. Only the main claim (detector-only vs detector + crop verifier + rule) "
+       "is repeated on **700 extra images** (`test_ext`, disjoint from held-out and test) because the baselines are too expensive to run on them "
+       "(VCD ~6 s/img, Woodpecker ~3.5 s/img). **Nothing is retuned:** crop margin, (tau_low, tau_high), the matched-recall pair and the detector-only tau* come from held-out. "
+       "Reported on test + test_ext (about 1000 images) and on test_ext alone (replication on images no decision was based on)."),
+    code(r'''
+if not TEST_EXT:
+    print("test_ext is disabled (coco.test_ext_size: 0) - section 8b skipped.")
+else:
+    t_det = float(np.mean([T.det[i]["det_time_s"] for i in TEST])); t_ver = float(np.mean([ver_t[i]["verify_time_s"] for i in TEST]))
+    n_det_todo = len(JsonlCache(paths.det_cache(cfg, "test_ext")).todo(TEST_EXT)); n_ver_todo = len(JsonlCache(paths.ver_cache(cfg, "test_ext", "crop")).todo(TEST_EXT))
+    print(f"time estimate: detector {n_det_todo} images x {t_det:.1f} s + crop verifier {n_ver_todo} images x {t_ver:.1f} s "
+          f"= ~{(n_det_todo * t_det + n_ver_todo * t_ver) / 60:.0f} min (images already cached are skipped; finished work survives a disconnect)")
+    with stage("8b extended test: detector + crop verifier on test_ext"):
+        fetch_images(cfg, TEST_EXT)
+        det_x = run_detection_stage(detector, TEST_EXT, paths.det_cache(cfg, "test_ext"), coco.image, "detect test_ext")
+        run_verification_stage(verifier, det_x, TEST_EXT, paths.ver_cache(cfg, "test_ext", "crop"), cfg, coco.image, view="crop",
+                               margin=cfg["verifier"]["crop_margin"], desc="verify test_ext")
+    TX = SplitData(cfg, coco, "test_ext", TEST_EXT); MTX = available_methods(cfg, TX)
+    ext = extended_comparison(cfg, T, TX, MT, MTX, n_boot=1000)
+    show = ext.copy()
+    for c in ["precision", "recall", "f1", "fp_per_image", "fp_reduction", "d_recall", "d_f1", "over_rejection_rate"]: show[c] = show[c].map(lambda x: f"{x:.3f}")
+    for c in ["fp_reduction_ci", "d_recall_ci", "d_f1_ci"]: show[c] = show[c].map(lambda t: "" if t is None else f2(t))
+    with pd.option_context("display.max_columns", None, "display.width", 250):
+        display(show[["set", "n_images", "criterion", "method", "precision", "recall", "f1", "fp_per_image", "fp_reduction", "fp_reduction_ci", "d_recall_ci", "d_f1_ci", "over_rejection_rate"]])
+    for set_name in ("test + test_ext", "test_ext only (replication)"):
+        for crit in ("best_f1", "matched_recall"):
+            r = ext[(ext.set == set_name) & (ext.criterion == crit) & (ext.method == PROPOSED)].iloc[0]
+            print(f"[{set_name} | {crit}] FP reduction {r.fp_reduction:+.1%} {f2(r.fp_reduction_ci)} -> {verdict(r.fp_reduction_ci, r.fp_reduction)}; "
+                  f"recall change {r.d_recall:+.3f} {f2(r.d_recall_ci)}; dF1 {r.d_f1:+.3f} {f2(r.d_f1_ci)} -> {verdict(r.d_f1_ci, r.d_f1)}")
 '''),
     md("## 9 · Accuracy versus cost\nCost of every (τ_low, τ_high) configuration, cost of each method at its operating point, and a **measured** online run of the gated pipeline (only the uncertain band is verified) to validate the cost model."),
     code(r'''
@@ -421,9 +488,10 @@ def rates(g):
     return pd.Series({"candidates": len(g), "FP": len(fp), "TP": len(tp), "FP removed (correct rejection)": (~fp.accepted).mean() if len(fp) else np.nan,
                       "TP lost (over-rejection)": (~tp.accepted).mean() if len(tp) else np.nan})
 edir = results_dir(cfg, "error_analysis"); print(df.outcome.value_counts().to_dict())
+NEED = ["is_fp", "is_tp", "accepted"]        # only the columns `rates` uses (the grouping column is not passed to it -> no pandas FutureWarning)
 for col in ["size", "conf_bin", "brightness_bin", "cooccurrence_fp", "band"]:
-    t_ = df.groupby(col, observed=True).apply(rates); t_.to_csv(edir / f"by_{col}.csv"); print(f"\n=== by {col} ==="); display(t_)
-by_cat = df.groupby("label").apply(rates).sort_values("FP", ascending=False); by_cat.to_csv(edir / "by_category.csv"); display(by_cat.head(12))
+    t_ = df.groupby(col, observed=True)[NEED].apply(rates); t_.to_csv(edir / f"by_{col}.csv"); print(f"\n=== by {col} ==="); display(t_)
+by_cat = df.groupby("label", observed=True)[NEED].apply(rates).sort_values("FP", ascending=False); by_cat.to_csv(edir / "by_category.csv"); display(by_cat.head(12))
 '''),
     code(r'''
 for oc in ["correct_rejection", "omission", "over_rejection"]:
@@ -452,14 +520,14 @@ with stage("11 robustness"):
         rows.append({"condition": cond, "det_precision": base["precision"], "det_recall": base["recall"], "det_fp_per_img": base["fp_per_image"],
                      "dvd_precision": dvd["precision"], "dvd_recall": dvd["recall"], "dvd_fp_per_img": dvd["fp_per_image"],
                      "fp_reduction": 1 - dvd["fp"] / max(base["fp"], 1), "over_rejection_rate": b["over_rejection_rate"]})
-rob = pd.DataFrame(rows); rob.to_csv(results_dir(cfg, "robustness") / "degradations.csv", index=False); rob
+rob = pd.DataFrame(rows); rob.to_csv(results_dir(cfg, "robustness") / "degradations.csv", index=False)
+# "clean" shows 0/0 progress bars because its caches are reused (finished earlier) - that is expected.
+# fp_reduction is relative to detector-only at tau* on the same images; show every column (no truncation).
+pd.set_option("display.max_columns", None); pd.set_option("display.width", 250)
+display(rob)
 '''),
     md("## 12 · Summary: what the results show (and what they do not)\nEvery statement is computed from the tables above; a claim is only marked *supported* when its 95 % interval excludes zero. With 300 test images some differences will be too small to establish — the notebook says so instead of hiding it."),
     code(r'''
-def verdict(ci, point):
-    # Plain-language verdict from a 95 % interval: supported / opposite direction / not established.
-    return "supported (95% CI excludes 0)" if ci[0] > 0 else ("opposite direction (CI below 0)" if ci[1] < 0 else "not established at this sample size (CI includes 0)")
-f2 = lambda t: f"[{t[0]:+.3f}, {t[1]:+.3f}]"
 L = ["# Detect-Verify-Decide - results summary (fast profile)", "",
      f"{len(HELDOUT)} held-out images (tuning only), {len(TEST)} test images (all reported numbers), seed {cfg['seed']}. Selected on held-out: "
      f"crop margin {cfg['selected']['crop_margin']}, tau_low {cfg['selected']['tau_low']}, tau_high {cfg['selected']['tau_high']}. No model was trained.", ""]
@@ -471,11 +539,27 @@ L += ["## Objective 2 - does verification reduce false positives at the same rec
       f"- False positives removed: {p.fp_reduction:.1%} {f2(p.fp_reduction_ci)}; recall change {p.d_recall:+.3f} {f2(p.d_recall_ci)}"
       + ("" if p.recall_matched else "  (NOTE: no configuration reached the detector's recall on held-out; best-F1 point shown)") + f" -> {verdict(p.fp_reduction_ci, p.fp_reduction)}.",
       f"- Best-F1: detector-only F1 {bb.loc[DET_ONLY].f1:.3f} -> pipeline {bb.loc[PROPOSED].f1:.3f} (paired dF1 {bb.loc[PROPOSED].d_f1:+.3f} {f2(bb.loc[PROPOSED].d_f1_ci)}) -> {verdict(bb.loc[PROPOSED].d_f1_ci, bb.loc[PROPOSED].d_f1)}.",
+      f"- How to read the best-F1 row: at this operating point the pipeline's FP change vs detector-only is {bb.loc[PROPOSED].fp_reduction:+.1%} (tau_low {cfg['selected']['tau_low']} vs detector tau* {cfg['selected']['detector_only_tau']}). "
+      + ("tau_low is BELOW the detector's own threshold, so the pipeline lets in more candidates and has MORE false positives than the detector alone; " if cfg["selected"]["tau_low"] < cfg["selected"]["detector_only_tau"] else "")
+      + "the best-F1 gain comes from recall, not from removing false positives. A false-positive reduction is claimed ONLY from the matched-recall row above.",
       f"- Of the detector's false positives (reference pool c >= tau_low) the decision stage rejects {bb.loc[PROPOSED].fp_removed_rate:.1%}; it wrongly rejects {bb.loc[PROPOSED].over_rejection_rate:.1%} of true detections.", ""]
 L += ["## Objective 3 - is the pipeline structure better than the baselines and ablations? (same models, same candidates)"]
 for crit in ("best_f1", "matched_recall"):
     for r in vs[vs.criterion == crit].itertuples():
         L.append(f"- [{crit}] vs {r.versus}: dF1 {r.d_f1:+.3f} {f2(r.d_f1_ci)} -> {verdict(r.d_f1_ci, r.d_f1)}; recall change {r.d_recall:+.3f}; false positives of the pipeline relative to it {-r.fp_reduction:+.1%} {f2((-r.fp_reduction_ci[1], -r.fp_reduction_ci[0]))}")
+_g = vs[(vs.criterion == "best_f1") & (vs.versus == "Ablation: global-view verifier + rule")]
+if len(_g):
+    _g = _g.iloc[0]
+    L += [f"- Crop vs global view: the verifier only acts in the band tau_low <= c < tau_high ({cfg['selected']['tau_low']}-{cfg['selected']['tau_high']}). Proposed (crop) vs the global-view ablation: dF1 {_g.d_f1:+.3f} {f2(_g.d_f1_ci)} -> {verdict(_g.d_f1_ci, _g.d_f1)}. "
+          + ("The two are not statistically distinguishable at pipeline level, so 'crop-and-zoom is necessary' must NOT be claimed." if _g.d_f1_ci[0] <= 0 <= _g.d_f1_ci[1] else "Read this difference together with the verifier-level diagnostics (AUROC) before attributing it to the crop.")]
+if "ext" in globals():
+    L += ["", "## Extended test (detector only vs proposed; operating points selected on held-out, nothing retuned)",
+          f"{len(TEST) + len(TEST_EXT)} images = test + {len(TEST_EXT)} extra images (test_ext) that no decision was based on; paired image-level bootstrap, 1000 resamples.", ""]
+    for set_name in ("test + test_ext", "test_ext only (replication)"):
+        for crit in ("best_f1", "matched_recall"):
+            _r = ext[(ext.set == set_name) & (ext.criterion == crit) & (ext.method == PROPOSED)].iloc[0]
+            L.append(f"- {set_name} | {crit}: FP reduction {_r.fp_reduction:+.1%} {f2(_r.fp_reduction_ci)}, recall change {_r.d_recall:+.3f} {f2(_r.d_recall_ci)}, dF1 {_r.d_f1:+.3f} {f2(_r.d_f1_ci)}, "
+                     f"over-rejection {_r.over_rejection_rate:.1%} -> FP reduction {verdict(_r.fp_reduction_ci, _r.fp_reduction)}")
 L += ["", "## Objective 2 - the verifier in isolation (POPE, first 300 questions per setting)", pope_df[["setting", "method", "accuracy", "precision", "recall", "f1", "yes_rate"]].round(3).to_markdown(index=False), ""]
 L += ["## Objective 4 - cost",
       f"- Online gated pipeline: {1 / online.total_s.mean():.2f} FPS vs detector alone {1 / online.det_s.mean():.2f} FPS; verifier called on {online.verify_calls.mean():.1f} of {online.candidates.mean():.1f} candidates per image; "
@@ -483,6 +567,8 @@ L += ["## Objective 4 - cost",
 L += ["## Monitoring conditions (thresholds from clean held-out data)", rob.round(3).to_markdown(index=False), "",
       "## Caveats", f"- Small samples ({len(TEST)} test images): read the intervals, not just the point estimates. Run `DVD_CONFIG=full` (docs/FAST_RUN.md) for the full protocol.",
       "- Woodpecker-style is a re-implementation with the same VLM/detector, not the official GPT-3.5 + BLIP-2 system. VCD is applied to yes/no existence queries per (image, label).",
+      f"- Woodpecker-style answer parsing (v2, JSON): test first-pass parse rate {WP_PARSE['test']['parse_rate_first_pass']:.1%}, {WP_PARSE['test']['n_fallback_items']} of {WP_PARSE['test']['n_listed_items']} items re-asked individually, "
+      f"keep rate {WP_PARSE['test']['keep_rate']:.1%} (held-out first-pass {WP_PARSE['held-out']['parse_rate_first_pass']:.1%}). Items the model did not answer in the JSON are decided by a plain per-item yes/no (counted in its cost), never silently kept.",
       f"- Crops are zoomed to {cfg['verifier']['crop_target_size']} px and global views are {cfg['verifier']['full_image_max_side']} px in this profile (speed).", ""]
 (results_dir(cfg, "") / "SUMMARY.md").write_text("\n".join(L), encoding="utf-8")
 print("\n".join(L))

@@ -28,8 +28,9 @@ The cached candidates are thresholded at τ, and τ\* is chosen on held-out by b
 
 **Implementation:**
 - The *same* VLM as the verifier receives the full image (longer side ≤ 896 px) and a numbered list of the top-30 candidates with boxes on a 0–1000 scale.
-- It answers `k: yes|no` for every item in one generation call, and that answer *is* the decision. Detector confidence is not fused in.
-- Candidates outside the top 30 are rejected. Listed candidates whose answer cannot be parsed keep the detector's claim, and the parse rate is logged.
+- It answers with one strict JSON object (`{"1": "keep", "2": "reject", ...}`, one short example in the prompt that contains a `reject`) for every item in one generation call, and that answer *is* the decision. Detector confidence is not fused in.
+- Candidates outside the list are rejected. Items whose answer cannot be parsed (JSON first, then regex) are **not** defaulted to yes: each is re-asked once as a plain yes/no on the full image (counted in the baseline's invocations and time). First-pass parse rate, fallback count and keep rate are logged (`parse_summary`).
+- Version 2 (cache `woodpecker_v2_*.jsonl`): v1 asked for `N: yes|no` lines; the 2B VLM echoed the list and answered yes to everything (parse rate 0.52), so v1 results are discarded.
 
 **Deviation from the proposal, stated plainly:** the proposal says this baseline is "implemented from the authors' public code" (github.com/BradyFU/Woodpecker). That code chains GPT-3.5 (paid API), Grounding DINO and BLIP-2 to correct *captions*. It cannot score detector boxes directly, and it would use different models from our pipeline. To keep the comparison like-for-like (identical detector, identical VLM, identical candidates), we re-implement Woodpecker's *structure*: one agent that validates and decides on global evidence. The report must state this. Running the official code on captions remains an optional extra if API budget allows.
 

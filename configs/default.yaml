@@ -24,7 +24,8 @@ coco:
   split: val2017
   heldout_size: 150                    # tuning split: crop margin + decision thresholds
   test_size: 300                       # evaluation split; null = all remaining 4850 images
-  iou_threshold: 0.5                   # TP if IoU >= this with an unmatched GT box of the same class
+  test_ext_size: 700                   # EXTRA test-only images (disjoint) for the detector-vs-proposed claim only (section 8b); 0 = off
+  iou_threshold: 0.5                 # TP if IoU >= this with an unmatched GT box of the same class
 
 detector:
   backend: grounding_dino              # grounding_dino | yolo_world

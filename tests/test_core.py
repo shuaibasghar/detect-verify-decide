@@ -156,9 +156,16 @@ class _FakeVLM:
         return {"p_yes": p, "verdict": [x > 0.5 for x in p], "answers": None}
 
     def generate(self, images, prompts, max_new_tokens=16):
-        """Record the batch size and answer 'k: yes' for odd items, 'k: no' for even ones."""
+        """Record the batch size and answer a JSON object: item k is 'keep' for odd k and 'reject' for even k."""
+        import re
         self.generate_calls.append(len(prompts))
-        return ["\n".join(f"{k}: {'yes' if k % 2 else 'no'}" for k in range(1, p.count("\n") + 1)) for p in prompts]
+        return ["{" + ", ".join('"%d": "%s"' % (k, "keep" if k % 2 else "reject")
+                                for k in range(1, len(re.findall(r"(?m)^\d+\. ", p)) + 1)) + "}" for p in prompts]
+
+    def yes_no(self, images, questions):
+        """Plain yes/no used by the Woodpecker fallback: P(yes)=0.9 for 'dog' questions, 0.1 otherwise."""
+        self.yes_no_calls = getattr(self, "yes_no_calls", []) + [list(questions)]
+        return np.array([0.9 if " dog" in q else 0.1 for q in questions])
 
 
 # Minimal config with only the keys the stages under test read.
@@ -356,6 +363,123 @@ def test_coco_from_attached_kaggle_input():
         DC.in_kaggle, DC.KAGGLE_INPUT = old
     assert (root / "annotations" / "instances_val2017.json").exists()
     assert (root / "val2017" / "000000000139.jpg").read_bytes() == b"img"
+
+
+def test_woodpecker_parser():
+    """JSON first, regex fallback, missing indices stay None, and the degenerate echo 'yes / 2: yes / 3: yes' is not trusted."""
+    # strict JSON, including a reject, text around it and a code fence
+    assert parse_answer('{"1": "keep", "2": "reject", "3": "keep"}', 3) == [True, False, True]
+    assert parse_answer('```json\n{"1": "reject", "2": "keep"}\n```', 2) == [False, True]
+    assert parse_answer('Sure! {"1": "keep", "2": "Reject."} Done.', 2) == [True, False]
+    # JSON with a missing index and an out-of-range one -> missing stays None
+    assert parse_answer('{"1": "keep", "3": "reject", "9": "keep"}', 3) == [True, None, False]
+    # truncated JSON (no closing brace) -> regex fallback still recovers the complete entries
+    assert parse_answer('{"1": "keep", "2": "reject", "3": "ke', 3) == [True, False, None]
+    # plain "N: yes/no/keep/reject" lines (old format) still parse
+    assert parse_answer("1: yes\n2: No\n3. reject\n4) keep", 4) == [True, False, False, True]
+    # degenerate echo: the bare first 'yes' has no number -> item 1 is unparsed, never silently 'yes'
+    assert parse_answer("yes\n2: yes\n3: yes", 3) == [None, True, True]
+    assert parse_answer("", 2) == [None, None] and parse_answer("I cannot tell.", 1) == [None]
+    # the prompt asks for JSON, contains a reject example and the item count
+    pr = build_prompt(["dog", "cat"], [[0, 0, 50, 100]] * 2, 100, 200)
+    assert '"reject"' in pr and "exactly 2 entries" in pr and "1. dog" in pr and "2. cat" in pr
+
+
+def test_woodpecker_fallback_asks_unparsed_items_individually():
+    """Unparsed items are re-asked as a plain yes/no (counted as invocations); parsed items are never re-asked."""
+    import tempfile
+    from pathlib import Path
+
+    from dvd import paths
+    from dvd.baselines.woodpecker_style import parse_summary, run_woodpecker_stage
+
+    class _Degenerate(_FakeVLM):
+        def generate(self, images, prompts, max_new_tokens=16):
+            # answers only item 2 ("2: no") for every image, so items 1 and 3 are unparsed
+            return ["yes\n2: no" for _ in prompts]
+
+    d = Path(tempfile.mkdtemp())
+    det = {1: {"scores": [.9, .8, .7], "labels": ["dog", "cat", "dog"], "boxes": [[0, 0, 9, 9]] * 3}}
+    vlm = _Degenerate()
+    out = run_woodpecker_stage(vlm, det, [1], d / "w.jsonl", {**_CFG, "woodpecker": {"max_candidates": 20, "batch_size": 1}},
+                               lambda i: Image.new("RGB", (64, 64)))
+    r = out[1]
+    assert r["verdict"] == [True, False, True]                       # items 1, 3 from the fallback (dog -> yes), item 2 parsed 'no'
+    assert r["n_fallback"] == 2 and r["invocations"] == 3 and abs(r["parse_ok"] - 1 / 3) < 1e-9 and r["parse_ok_final"] == 1.0
+    assert len(vlm.yes_no_calls) == 1 and len(vlm.yes_no_calls[0]) == 2
+    s = parse_summary(out)
+    assert s["n_fallback_items"] == 2 and abs(s["parse_rate_first_pass"] - 1 / 3) < 1e-9 and s["parse_rate_final"] == 1.0
+    name = paths.woodpecker_cache({"paths": {"results_root": str(d)}, "detector": {"backend": "g"}, "verifier": {"model": "a/b"}}, "test").name
+    assert name.startswith("woodpecker_v2_")
+
+
+def test_make_splits_adds_disjoint_test_ext_without_touching_old_ids():
+    """Adding test_ext to an existing splits.json keeps heldout/test identical; test_ext is disjoint and reproducible."""
+    import tempfile
+
+    from dvd.data.coco import make_splits
+
+    d = tempfile.mkdtemp()
+    cfg = {"seed": 42, "paths": {"results_root": d}, "coco": {"heldout_size": 15, "test_size": 30}}
+    ids = list(range(1000, 1400))
+    old = make_splits(cfg, ids)                                      # the original two splits, test_ext not requested
+    assert "test_ext" not in old
+    heldout, test = list(old["heldout"]), list(old["test"])
+    cfg2 = {**cfg, "coco": {**cfg["coco"], "test_ext_size": 70}}
+    new = make_splits(cfg2, ids)
+    assert new["heldout"] == heldout and new["test"] == test         # unchanged
+    assert len(new["test_ext"]) == 70 and len(set(new["test_ext"])) == 70
+    assert not set(new["test_ext"]) & (set(heldout) | set(test))     # disjoint
+    assert make_splits(cfg2, ids) == new and make_splits(cfg, ids) == new   # frozen: stable on re-load
+    # a fresh results folder gives the same three splits (deterministic)
+    cfg3 = {**cfg2, "paths": {"results_root": tempfile.mkdtemp()}}
+    assert make_splits(cfg3, ids) == new
+
+
+def test_pope_sampling_gives_each_setting_its_own_questions():
+    """balanced_seeded: half yes / half no, reproducible, different per setting; head = first N rows."""
+    from dvd.data.pope import select_rows
+
+    rows = [{"label": "yes" if k % 2 == 0 else "no", "image": f"i{k}.jpg", "text": f"q{k}"} for k in range(200)]
+    assert select_rows(rows, "random", 20, "head") == rows[:20]
+    a = select_rows(rows, "random", 20, "balanced_seeded")
+    b = select_rows(rows, "popular", 20, "balanced_seeded")
+    assert a == select_rows(rows, "random", 20, "balanced_seeded") and a != b
+    assert sum(r["label"] == "yes" for r in a) == 10 and len(a) == 20
+
+
+def test_extended_comparison_on_synthetic_data():
+    """Detector-only vs proposed on test + test_ext with FIXED selected operating points; a perfect verifier removes FPs."""
+    import os
+    import tempfile
+
+    from dvd.experiments import DET_ONLY, PROPOSED, SplitData, extended_comparison
+
+    def make(offset):
+        rng = np.random.default_rng(offset)
+        gts, cands, ver = {}, {}, {}
+        for i in range(offset, offset + 60):
+            gts[i] = {"boxes": np.array([[0, 0, 10, 10]], np.float32), "category_ids": np.array([1]), "iscrowd": np.array([False])}
+            cands[i] = {"boxes": [[0, 0, 10, 10], [50, 50, 60, 60]], "scores": [float(rng.choice([0.9, 0.4])), 0.38],
+                        "category_ids": [1, 1], "det_time_s": 1.0, "det_invocations": 4}
+            ver[i] = np.array([True, False])
+        sd = object.__new__(SplitData)
+        sd.cfg, sd.split, sd.ids, sd.det, sd.gts = {}, "x", list(gts), cands, gts
+        sd.ev = DetectionEvaluator(cands, gts, 0.5)
+        sd.labels = sd.ev.candidate_labels()
+        return sd, {DET_ONLY: {"kind": "none"}, PROPOSED: {"kind": "rule", "verdicts": ver, "t_call": 0.1}}
+
+    (T, MT), (TX, MTX) = make(0), make(1000)
+    cfg = {"paths": {"results_root": tempfile.mkdtemp()},
+           "selected": {"detector_only_tau": 0.5, "tau_low": 0.35, "tau_high": 0.5, "matched_tau_low": 0.35, "matched_tau_high": 0.5}}
+    df = extended_comparison(cfg, T, TX, MT, MTX, n_boot=100)
+    assert set(df.set) == {"test + test_ext", "test_ext only (replication)", "test only"}
+    assert set(df.criterion) == {"best_f1", "matched_recall"}
+    both = df[(df.set == "test + test_ext") & (df.criterion == "matched_recall")]
+    r, d0 = both[both.method == PROPOSED].iloc[0], both[both.method == DET_ONLY].iloc[0]
+    assert r.n_images == 120 and r.recall >= d0.recall and r.fp_per_image == 0 and d0.fp_per_image == 0   # FP at 0.38 < tau 0.5 never accepted by the detector
+    assert r.recall > d0.recall and r.d_recall_ci[0] > 0                                                # the verifier rescues true boxes at c=0.4
+    assert os.path.exists(os.path.join(cfg["paths"]["results_root"], "tables", "extended_comparison.csv"))
 
 
 if __name__ == "__main__":

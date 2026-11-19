@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 # re: regular expression that extracts the object name from a question.
 import re
+# random: seeded balanced sampling of the questions.
+import random
 # pathlib.Path: portable file paths.
 from pathlib import Path
 # Iterator: type hint for the lazy generators below.
@@ -37,8 +39,51 @@ def question_object(question: str) -> str:
     return m.group(1).strip() if m else ""
 
 
-def _from_hf(cfg: dict, setting: str) -> Iterator[dict]:
-    """Yield POPE items from the Hugging Face dataset (large download; images are embedded)."""
+def _github_rows(cfg: dict, setting: str) -> list[dict]:
+    """The raw question rows of one setting (small JSON-lines file from the POPE repo; no images are downloaded)."""
+    root = Path(cfg["paths"]["data_root"]) / "pope"
+    qfile = download(POPE_GITHUB.format(setting=setting), root / f"coco_pope_{setting}.json")
+    with open(qfile, "r", encoding="utf-8") as f:
+        return [json.loads(l) for l in f if l.strip()]
+
+
+def select_rows(rows: list[dict], setting: str, max_n: int | None, sample: str = "head", seed: int = 42) -> list[dict]:
+    """Which questions are used. "head": the first `max_n` rows of the file (original behaviour).
+    "balanced_seeded": `max_n` rows, half "yes" and half "no", drawn with a seed that includes the setting name, so
+    different settings draw their own questions; the original file order is kept."""
+    if sample == "head" or max_n is None:
+        return rows if max_n is None else rows[:max_n]
+    if sample != "balanced_seeded":
+        raise ValueError(f"Unknown POPE sample mode: {sample}")
+    rng = random.Random(f"{seed}-{setting}")
+    yes = [k for k, r in enumerate(rows) if r["label"].strip().lower() == "yes"]
+    no = [k for k, r in enumerate(rows) if r["label"].strip().lower() != "yes"]
+    keep = sorted(rng.sample(yes, min(max_n // 2, len(yes))) + rng.sample(no, min(max_n - max_n // 2, len(no))))
+    return [rows[k] for k in keep]
+
+
+def question_keys(cfg: dict, setting: str, max_n: int | None, sample: str = "head") -> list[tuple]:
+    """(image, question text) of the questions that would be used - for comparing settings without any model run."""
+    return [(r["image"], r["text"]) for r in select_rows(_github_rows(cfg, setting), setting, max_n, sample,
+                                                         cfg.get("seed", 42))]
+
+
+def overlap_report(cfg: dict, settings, max_n: int | None, samples: dict | None = None) -> list[dict]:
+    """Pairwise overlap of the question sets of the settings (fraction of identical (image, question) pairs).
+    Used to detect that two settings are really the same 300 questions (then the results are trivially equal)."""
+    samples = samples or {}
+    keys = {s: set(question_keys(cfg, s, max_n, samples.get(s, "head"))) for s in settings}
+    out = []
+    for i, a in enumerate(settings):
+        for b in settings[i + 1:]:
+            out.append({"a": a, "b": b, "n_a": len(keys[a]), "n_b": len(keys[b]),
+                        "identical_fraction": len(keys[a] & keys[b]) / max(min(len(keys[a]), len(keys[b])), 1)})
+    return out
+
+
+def _from_hf(cfg: dict, setting: str, max_n: int | None = None, sample: str = "head") -> Iterator[dict]:
+    """Yield POPE items from the Hugging Face dataset (large download; images are embedded).
+    (`sample` is only supported by the GitHub source; here the first questions are used.)"""
     # `datasets` is imported lazily: it is only needed on this path.
     from datasets import load_dataset
 
@@ -57,13 +102,11 @@ def _from_hf(cfg: dict, setting: str) -> Iterator[dict]:
         }
 
 
-def _from_github(cfg: dict, setting: str) -> Iterator[dict]:
+def _from_github(cfg: dict, setting: str, max_n: int | None = None, sample: str = "head") -> Iterator[dict]:
     """Yield POPE items from the original question file; each image is downloaded only when first needed."""
     root = Path(cfg["paths"]["data_root"]) / "pope"
-    # The question file is small (a few hundred KB).
-    qfile = download(POPE_GITHUB.format(setting=setting), root / f"coco_pope_{setting}.json")
-    with open(qfile, "r", encoding="utf-8") as f:
-        rows = [json.loads(l) for l in f if l.strip()]
+    # The question file is small (a few hundred KB); `sample` decides which questions are used.
+    rows = select_rows(_github_rows(cfg, setting), setting, max_n, sample, cfg.get("seed", 42))
     for r in rows:
         img_path = root / "images" / r["image"]
         # Lazy download: a run that stops after 300 questions only fetches ~50 images.
@@ -79,15 +122,17 @@ def _from_github(cfg: dict, setting: str) -> Iterator[dict]:
         }
 
 
-def iter_pope(cfg: dict, setting: str, max_n: int | None = None) -> Iterator[dict]:
-    """Yield POPE items for `setting` in {random, popular, adversarial}."""
+def iter_pope(cfg: dict, setting: str, max_n: int | None = None, sample: str = "head") -> Iterator[dict]:
+    """Yield POPE items for `setting` in {random, popular, adversarial}.
+    `sample`: "head" = first `max_n` questions of the file (default, as before); "balanced_seeded" = a seeded,
+    yes/no-balanced draw of `max_n` questions of this setting (GitHub source only)."""
     # cfg["pope"]["source"]: "github" = question files + only the images actually used (fast for small max_n),
     # "hf" = the full lmms-lab/POPE dataset (large download). The other one is the fallback.
     order = [_from_github, _from_hf] if cfg["pope"].get("source", "hf") == "github" else [_from_hf, _from_github]
     gen = first = None
     for k, src in enumerate(order):
         try:
-            gen = src(cfg, setting)
+            gen = src(cfg, setting, max_n, sample)
             # Generators are lazy: errors only surface when the first item is requested.
             first = next(gen)
             break

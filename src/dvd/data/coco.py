@@ -178,22 +178,34 @@ class CocoData:
 
 
 def make_splits(cfg: dict, image_ids: list[int]) -> dict:
-    """Seeded held-out / test split of val2017, saved to results/splits.json (created once)."""
+    """Seeded held-out / test split of val2017, saved to results/splits.json (created once).
+    Optional third split "test_ext" (coco.test_ext_size > 0): extra images disjoint from held-out and test, used only
+    to tighten the detector-vs-proposed comparison. It is added to an existing splits.json without touching the
+    existing "heldout" / "test" ids."""
     path = Path(cfg["paths"]["results_root"]) / "splits.json"
     # The split is frozen after the first creation, so every notebook uses identical images.
     if path.exists():
-        return load_json(path)
-    ids = sorted(image_ids)
-    # Deterministic shuffle (fixed seed) -> same split on every machine.
-    random.Random(cfg["seed"]).shuffle(ids)
-    n_h = cfg["coco"]["heldout_size"]
-    n_t = cfg["coco"]["test_size"]
-    # Held-out = first n_h shuffled ids; test = the next n_t (or all the rest if test_size is null).
-    heldout = sorted(ids[:n_h])
-    rest = ids[n_h:]
-    test = sorted(rest if n_t is None else rest[:n_t])
-    splits = {"heldout": heldout, "test": test, "seed": cfg["seed"]}
-    save_json(splits, path)
+        splits = load_json(path)
+    else:
+        ids = sorted(image_ids)
+        # Deterministic shuffle (fixed seed) -> same split on every machine.
+        random.Random(cfg["seed"]).shuffle(ids)
+        n_h = cfg["coco"]["heldout_size"]
+        n_t = cfg["coco"]["test_size"]
+        # Held-out = first n_h shuffled ids; test = the next n_t (or all the rest if test_size is null).
+        heldout = sorted(ids[:n_h])
+        rest = ids[n_h:]
+        test = sorted(rest if n_t is None else rest[:n_t])
+        splits = {"heldout": heldout, "test": test, "seed": cfg["seed"]}
+        save_json(splits, path)
+    n_x = int(cfg["coco"].get("test_ext_size", 0) or 0)
+    if n_x > 0 and "test_ext" not in splits:
+        # Own seeded shuffle of the images that are in neither split (so the older splits are never affected).
+        used = set(splits["heldout"]) | set(splits["test"])
+        pool = sorted(i for i in image_ids if i not in used)
+        random.Random(f"{cfg['seed']}-test_ext").shuffle(pool)
+        splits["test_ext"] = sorted(pool[:n_x])
+        save_json(splits, path)
     return splits
 
 

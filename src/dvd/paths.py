@@ -37,8 +37,10 @@ def ver_cache(cfg: dict, split: str, view: str = "crop", mode: str | None = None
 
 
 def woodpecker_cache(cfg: dict, split: str) -> Path:
-    """Cache of the Woodpecker-style baseline (baseline ii)."""
-    return results_dir(cfg, "baselines") / f"woodpecker_{_det_tag(cfg)}_{_vlm_tag(cfg)}_{split}.jsonl"
+    """Cache of the Woodpecker-style baseline (baseline ii), version 2 (JSON answers + per-item fallback).
+    The v1 file (woodpecker_<det>_<vlm>_<split>.jsonl, degenerate "yes to everything" answers) is left untouched
+    and never read."""
+    return results_dir(cfg, "baselines") / f"woodpecker_v2_{_det_tag(cfg)}_{_vlm_tag(cfg)}_{split}.jsonl"
 
 
 def vcd_cache(cfg: dict, split: str) -> Path:
@@ -46,6 +48,9 @@ def vcd_cache(cfg: dict, split: str) -> Path:
     return results_dir(cfg, "baselines") / f"vcd_{_det_tag(cfg)}_{_vlm_tag(cfg)}_{split}.jsonl"
 
 
-def pope_cache(cfg: dict, setting: str, method: str = "plain") -> Path:
-    """Cache of POPE answers for one setting (random / popular / adversarial) and method (plain / vcd)."""
-    return results_dir(cfg, "pope") / f"{_vlm_tag(cfg)}_{method}_{setting}.jsonl"
+def pope_cache(cfg: dict, setting: str, method: str = "plain", sample: str = "head") -> Path:
+    """Cache of POPE answers for one setting (random / popular / adversarial) and method (plain / vcd).
+    `sample` = how the questions were chosen: "head" (first N of the file, the original name) or
+    "balanced_seeded" (own seeded yes/no-balanced sample; gets a versioned name so old caches stay valid)."""
+    tag = "" if sample == "head" else f"_{sample}"
+    return results_dir(cfg, "pope") / f"{_vlm_tag(cfg)}_{method}_{setting}{tag}.jsonl"

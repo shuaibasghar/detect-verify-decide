@@ -21,7 +21,7 @@ from .cost import detector_cost, per_call_seconds
 # Resumable JSONL cache reader.
 from .io_utils import JsonlCache
 # Evaluator, decision masks, operating-point selection and threshold sweeps.
-from .metrics import (DetectionEvaluator, rule_masks, select_at_recall, select_best, sweep_detector_only,
+from .metrics import (DetectionEvaluator, rule_masks, select_at_recall, select_best, summarize, sweep_detector_only,
                       sweep_gate, sweep_rule)
 
 # Display names of the main method and the baseline; used as dictionary keys and in tables.
@@ -223,6 +223,70 @@ def paired_vs_proposed(cfg: dict, T: SplitData, MT: dict, sweeps_h: dict, base_h
                      "d_recall": pb["d_recall"]["point"], "d_recall_ci": pb["d_recall"]["ci"],
                      "d_f1": pb["d_f1"]["point"], "d_f1_ci": pb["d_f1"]["ci"], "p_f1_gt0": pb["d_f1"]["p_gt0"]})
     return pd.DataFrame(rows)
+
+
+def extended_comparison(cfg: dict, T: SplitData, TX: SplitData, MT: dict, MTX: dict, n_boot: int = 1000,
+                        save: bool = True):
+    """Detector-only vs the proposed pipeline (crop verifier + rule) on the COMBINED test + test_ext images, and on
+    test_ext alone (replication on images nobody has looked at). Only the operating points already selected on
+    held-out (cfg["selected"]) are used - nothing is retuned. Both operating points are reported:
+    best-F1 (tau_low, tau_high) and matched-recall (matched_tau_low, matched_tau_high); the detector-only point is
+    detector_only_tau. Intervals are 1000-resample PAIRED image-level bootstraps (same resampled images for both).
+    Saves tables/extended_comparison.csv/.md; returns the DataFrame."""
+    import pandas as pd
+    from .metrics import decision_breakdown, paired_bootstrap
+
+    s = cfg.get("selected") or {}
+    need = ["detector_only_tau", "tau_low", "tau_high", "matched_tau_low", "matched_tau_high"]
+    if any(k not in s for k in need):
+        raise RuntimeError(f"selected.json lacks {[k for k in need if k not in s]} - run the decision-agent step first.")
+    det_row = {"tau": s["detector_only_tau"]}
+    points = {"best_f1": {"tau_low": s["tau_low"], "tau_high": s["tau_high"]},
+              "matched_recall": {"tau_low": s["matched_tau_low"], "tau_high": s["matched_tau_high"]}}
+    cat = lambda parts: {k: np.concatenate([p[k] for p in parts]) for k in ("tp", "fp", "n_gt")}  # noqa: E731
+    sets = {"test + test_ext": [(T, MT), (TX, MTX)], "test_ext only (replication)": [(TX, MTX)], "test only": [(T, MT)]}
+    rows = []
+    for set_name, parts in sets.items():
+        # Per-image counts of the detector-only baseline (identical for both criteria), over all images of the set.
+        base = cat([per_image_counts(M[DET_ONLY], D, det_row) for D, M in parts])
+        n_img = len(base["tp"])
+        labels = {i: D.labels[i] for D, _ in parts for i in D.ids}
+        scores = {i: D.ev.scores(i) for D, _ in parts for i in D.ids}
+        for crit, row in points.items():
+            pro = cat([per_image_counts(M[PROPOSED], D, row) for D, M in parts])
+            masks = {}
+            for D, M in parts:
+                masks.update(masks_for(M[PROPOSED], D, row))
+            br = decision_breakdown(labels, scores, masks, det_row["tau"])
+            pb = paired_bootstrap(base, pro, n_boot)
+            for name, c in ((DET_ONLY, base), (PROPOSED, pro)):
+                tot = summarize(c["tp"].sum(), c["fp"].sum(), c["n_gt"].sum(), n_img)
+                is_p = name == PROPOSED
+                rows.append({"set": set_name, "n_images": n_img, "criterion": crit, "method": name,
+                             **({"tau_low": row["tau_low"], "tau_high": row["tau_high"]} if is_p else {"tau": det_row["tau"]}),
+                             "precision": tot["precision"], "recall": tot["recall"], "f1": tot["f1"],
+                             "fp_per_image": tot["fp_per_image"],
+                             "fp_reduction": pb["fp_reduction"]["point"] if is_p else 0.0,
+                             "fp_reduction_ci": pb["fp_reduction"]["ci"] if is_p else None,
+                             "d_recall": pb["d_recall"]["point"] if is_p else 0.0,
+                             "d_recall_ci": pb["d_recall"]["ci"] if is_p else None,
+                             "d_f1": pb["d_f1"]["point"] if is_p else 0.0, "d_f1_ci": pb["d_f1"]["ci"] if is_p else None,
+                             "over_rejection_rate": br["over_rejection_rate"] if is_p else 0.0})
+    df = pd.DataFrame(rows)
+    if save:
+        from .config import results_dir
+        tdir = results_dir(cfg, "tables")
+        df.to_csv(tdir / "extended_comparison.csv", index=False)
+        fmt = df.copy()
+        for c in ["precision", "recall", "f1", "fp_per_image", "fp_reduction", "d_recall", "d_f1", "over_rejection_rate"]:
+            fmt[c] = fmt[c].map(lambda x: f"{x:.3f}")
+        for c in ["fp_reduction_ci", "d_recall_ci", "d_f1_ci"]:
+            fmt[c] = fmt[c].map(lambda t: "" if t is None else f"[{t[0]:+.3f}, {t[1]:+.3f}]")
+        (tdir / "extended_comparison.md").write_text(
+            fmt[["set", "n_images", "criterion", "method", "precision", "recall", "f1", "fp_per_image", "fp_reduction",
+                 "fp_reduction_ci", "d_recall_ci", "d_f1_ci", "over_rejection_rate"]].to_markdown(index=False),
+            encoding="utf-8")
+    return df
 
 
 def _n_verified(method: dict, data: SplitData, row: dict) -> float:
