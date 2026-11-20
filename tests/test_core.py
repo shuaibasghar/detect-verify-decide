@@ -119,8 +119,25 @@ def test_metrics_misc():
 
 def test_pipeline_events():
     """The online pipeline emits ordered progress events and gives the same answer with or without a callback."""
-    from dvd.mock_agents import MockDetector, MockVerifier
     from dvd.pipeline import DetectVerifyDecide
+
+    class MockDetector:
+        """Fixed 8 candidates with scores 0.9 ... 0.2 (same record format as the real detector)."""
+        def detect(self, image, on_progress=None):
+            w, h = image.size
+            sc = [0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2]
+            if on_progress:
+                on_progress(1, 1, len(sc))
+            return {"boxes": [[10 * k, 10 * k, 10 * k + 60, 10 * k + 60] for k in range(8)], "scores": sc,
+                    "labels": ["dog"] * 8, "category_ids": [18] * 8, "det_time_s": 0.0, "det_invocations": 1,
+                    "width": w, "height": h}
+
+    class MockVerifier:
+        """P(yes) alternates 0.9 / 0.1 per crop."""
+        batch_size = 4
+        def verify(self, views, labels, mode="existence", *args, **kwargs):
+            p = [0.9 if k % 2 == 0 else 0.1 for k in range(len(views))]
+            return {"p_yes": p, "verdict": [x > 0.5 for x in p], "answers": None}
 
     cfg = {"verifier": {"crop_margin": 0.15, "crop_target_size": 448, "min_crop_side": 28, "mode": "existence",
                         "prompt_existence": "Is there {article} {label} in the image?", "prompt_open": "",

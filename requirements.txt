@@ -23,8 +23,6 @@ tqdm>=4.66
 matplotlib>=3.8
 tabulate>=0.9                # pandas.DataFrame.to_markdown for the results tables
 
-# --- Demo UI (app/streamlit_app.py) ------------------------------------------
-streamlit>=1.52
 
 # --- Optional: YOLO-World detector backend (detector.backend: yolo_world) ----
 ultralytics>=8.3

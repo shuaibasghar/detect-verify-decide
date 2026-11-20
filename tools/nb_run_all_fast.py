@@ -45,7 +45,7 @@ if IN_COLAB:
         subprocess.run(["git", "clone", "-b", BRANCH, REPO_URL, DRIVE_PROJECT], check=True)
     elif os.path.isdir(os.path.join(DRIVE_PROJECT, ".git")):      # pick up the latest pushed code (never touches your notebooks/results)
         subprocess.run(["git", "-C", DRIVE_PROJECT, "fetch", "origin", BRANCH], check=False)
-        subprocess.run(["git", "-C", DRIVE_PROJECT, "checkout", "FETCH_HEAD", "--", "src", "configs", "requirements.txt", "tools", "app"], check=False)
+        subprocess.run(["git", "-C", DRIVE_PROJECT, "checkout", "FETCH_HEAD", "--", "src", "configs", "requirements.txt", "tools"], check=False)
     PROJECT_ROOT = DRIVE_PROJECT
 elif IN_KAGGLE:
     PROJECT_ROOT = "/kaggle/working/detect-verify-decide"
@@ -70,7 +70,7 @@ elif IN_KAGGLE:
             raise RuntimeError("Set REPO_URL (and BRANCH) above, or attach the project as a Kaggle Dataset.")
     elif REPO_URL and os.path.isdir(os.path.join(PROJECT_ROOT, ".git")):   # folder left over from an earlier run: update it to the latest code
         subprocess.run(["git", "-C", PROJECT_ROOT, "fetch", "-q", url, BRANCH], capture_output=True)
-        subprocess.run(["git", "-C", PROJECT_ROOT, "checkout", "-q", "FETCH_HEAD", "--", "src", "configs", "requirements.txt", "tools", "app"], capture_output=True)
+        subprocess.run(["git", "-C", PROJECT_ROOT, "checkout", "-q", "FETCH_HEAD", "--", "src", "configs", "requirements.txt", "tools"], capture_output=True)
 else:
     PROJECT_ROOT = os.path.abspath(os.path.join(os.getcwd(), ".."))
 assert os.path.isdir(os.path.join(PROJECT_ROOT, "src", "dvd")), f"src/dvd not found under {PROJECT_ROOT}"
@@ -97,11 +97,21 @@ if IN_COLAB:
     os.makedirs(RESULTS_DRIVE, exist_ok=True)
     shutil.copytree(RESULTS_DRIVE, RESULTS_LOCAL, dirs_exist_ok=True)       # resume from a previous session
 if IN_KAGGLE:   # resume: results of an earlier version, attached via Add Input -> Notebook output (or as a Dataset)
-    import glob
     os.makedirs(RESULTS_LOCAL, exist_ok=True)
-    for prev in glob.glob("/kaggle/input/**/results_fast", recursive=True):
-        shutil.copytree(prev, RESULTS_LOCAL, dirs_exist_ok=True)
+    def _copy_if_newer(src, dst):
+        # The caches are append-only, so the BIGGER file has more progress: never overwrite newer work in /kaggle/working
+        # with an older attached copy (matters when you re-run this cell in a session that already made progress).
+        if os.path.exists(dst) and os.path.getsize(dst) >= os.path.getsize(src):
+            return dst
+        return shutil.copy2(src, dst)
+    prevs = []
+    for dp, dn, _ in os.walk("/kaggle/input"):          # bounded search (COCO has ~100k files, a full recursive glob would be slow)
+        if dp.count(os.sep) - 2 >= 5: dn[:] = []; continue
+        if "results_fast" in dn: prevs.append(os.path.join(dp, "results_fast")); dn.remove("results_fast")
+    for prev in prevs:
+        shutil.copytree(prev, RESULTS_LOCAL, dirs_exist_ok=True, copy_function=_copy_if_newer)
         print("restored earlier results from", prev)
+    print("cached stage files now present:", sum(len(fs) for _, _, fs in os.walk(RESULTS_LOCAL)))
 
 from dvd.config import load_config, save_selected, results_dir  # load configs/default.yaml, save tuned values, results folders
 from dvd.io_utils import set_seed, save_json, load_json, JsonlCache  # seeding, JSON helpers and the resumable JSONL cache
